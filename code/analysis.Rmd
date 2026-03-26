@@ -54,8 +54,9 @@ suppressPackageStartupMessages({
   library(forcats)
 })
 
-getwd()
-setwd("C:/Users/irish/OneDrive/Documents/R/SKN-1_IIS/SKN-1_IIS")
+usethis::use_github()
+#getwd()
+#setwd("C:/Users/irish/OneDrive/Documents/R/SKN-1_IIS/SKN-1_IIS")
 #24-hour 15 to 25C thermocycling experiments, HF = 25C first, CF = 15C first, LS = lifespan, rep = reproduction
 thermo_HF_rep <- read.csv('data/Thermo_H_rep.csv')
 thermo_HF_LS <- read.csv('data/Thermo_H_LS.csv')
