@@ -1,0 +1,1796 @@
+---
+title: "plots"
+author: "Sara Irish"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+#Setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+suppressPackageStartupMessages({
+  library(glmmTMB)
+  library(car)
+  library(popbio)
+  library(ggplot2)
+  library(ggbeeswarm)
+  library(shades)
+  library(RColorBrewer)
+  library(DHARMa)
+  library(Rmisc)
+  library(dabestr)
+  library(magrittr)
+  library(tidyr)
+  library(dplyr)
+  library(ggeffects)
+  library(lme4)
+  library(optimx)
+  library(nloptr)
+  library(dfoptim)
+  library(data.table)
+  library(pscl)
+  library(ggThemeAssist)
+  library(DHARMa)
+  library(emmeans)
+  library(ggpubr)
+  library(patchwork)
+  library(lubridate)
+  library(survival)
+  library(coxme) #for cox model
+  library(ggplot2)
+  library(purrr) #for forestplot
+  library(ggpubr) #for forestplot
+  library(survminer) #for forestplot
+  library(AICcmodavg)
+  library(permutes)
+  library(performance)
+  library(fields)
+  library(grid)
+  library(ggplotify)
+  library(cowplot)
+  library(eha)
+  library(multcomp)
+  library(usethis)
+  library(forcats)
+})
+
+getwd()
+setwd("C:/Users/irish/OneDrive/Documents/R/SKN-1_IIS/SKN-1_IIS")
+#24-hour 15 to 25C thermocycling experiments, HF = 25C first, CF = 15C first, LS = lifespan, rep = reproduction
+thermo_HF_rep <- read.csv('data/Thermo_H_rep.csv')
+thermo_HF_LS <- read.csv('data/Thermo_H_LS.csv')
+thermo_CF_rep <- read.csv('data/Thermo_C_rep.csv')
+thermo_CF_LS <- read.csv('data/Thermo_C_LS.csv') 
+
+#SKN-1 mutants with and without daf-2 RNAi KD in 20C - LS = lifespan, rep = reproduction
+SKN_20C_rep <- read.csv('data/SKN1_20C_repro.csv')
+SKN_20C_LS <- read.csv('data/SKN1_20C_LS.csv')
+
+#Lifespan experiment SKN-1 mutants with and without daf-2 RNAi KD in 15 and 25C, with additional treatment of daf-2 RNAi KD SKN-1 mutants starting with 24 hrs of opposite temperature to test effects of temperature on early development of SKN-1 mutants
+SKN_15_25_LS <- read.csv('data/SKN_N2_LS_15_25.csv')
+
+#Create colour palette
+palette <- c('#E64B35FF','#4DBBD5FF', '#00A087FF', '#3C5488FF')
+
+#plot labels for survival plots
+N2_daf_label <- expression("N2: "*italic("daf-2"))
+skn_daf_label <- expression(italic("skn-1: daf-2"))
+skn_ev_label <- expression(italic("skn-1: ")*'ev')
+skn_cycle_label <- expression(italic('skn-1: daf-2')*' + cycle')
+
+lam_lab <- expression(Delta*' Individual fitness (vs N2 ev)')
+lrs_lab <- expression(Delta*' LRS (vs N2 ev)')
+skn_lab <- expression(italic('skn-1'))
+daf_label <- expression(italic('daf-2'))
+daf_cyc_forest_lab <- expression(
+  atop(
+    italic('daf-2'),
+    '+cycle'))
+
+
+#plot lables for forest plots
+N2_daf_forest_lab <- expression(
+  atop(
+    'N2:',
+    italic('daf-2')*' - ev'))
+
+skn_daf_forest_lab <- expression(
+  atop(
+    italic('skn-1:'),
+    italic('daf-2')*' - ev'))
+
+
+GAM_skn_daf_forest_lab <- expression(
+  atop(
+    italic('skn-1:'),
+    italic('daf-2')*' / ev'))
+
+skn_daf_cyc_forest_lab <- expression(
+  atop(
+    italic('skn-1:'),
+    italic('daf-2')*'+cycle - ev'))
+
+
+
+#function to get contrasts from linear and Gamma models
+get_contrasts <- function(model, ref = 1, type = NULL) {
+  emm <- emmeans(model, ~ Treatment, type = type)
+  contr <- contrast(emm, method = "trt.vs.ctrl", ref = ref)
+  as.data.frame(confint(contr))
+}
+
+#function to build forest plot for just daf-2/ev comparisons within Skn-1
+forest_plot <- function(df, xlab, ref_line) {
+  ggplot(df, aes(x = estimate, y = contrast)) +
+    geom_point(size = 3, colour = "#4DBBD5FF") +
+    geom_errorbarh(
+      aes(xmin = lower.CL, xmax = upper.CL),
+      height = 0.2,
+      colour = "#4DBBD5FF"
+    ) +
+    geom_vline(
+      xintercept = ref_line,
+      linetype = "dashed",
+      colour = "#E64B35FF",
+      linewidth = 1
+    ) +
+    labs(x = xlab, y = NULL) +
+    theme_minimal(base_size = 12) +
+    theme(
+      legend.position = "none",
+      axis.text = element_text(size = 12),
+      axis.title = element_text(size = 12),
+      axis.line.x = element_line(color = "black", size = 0.5),
+      axis.line.y = element_line(color = "black", size = 0.5))
+}
+
+#forest plot function to compare across N2/skn-1 and daf-2/ev combos
+forest_emmeans <- function(model,
+                           strain = "Strain",
+                           treatment = "Treatment",
+                           ref_strain = "N2",
+                           ref_treatment = "ev",
+                           level = 0.95,
+                           contrast_order = c(
+                             "N2 daf - N2 ev",
+                             "(SKN-1 ev) - N2 ev",
+                             "(SKN-1 daf) - N2 ev"
+                           ),
+                           xlab = NULL) {
+  
+  # Estimated marginal means
+  emm <- emmeans::emmeans(
+    model,
+    as.formula(paste("~", strain, "*", treatment))
+  )
+  
+  # Index of reference
+  ref_idx <- which(
+    emm@grid[[strain]] == ref_strain &
+    emm@grid[[treatment]] == ref_treatment
+  )
+  
+  # Contrasts vs reference
+  ctr <- emmeans::contrast(emm, "trt.vs.ctrl", ref = ref_idx)
+  
+  # Confidence intervals
+  df <- as.data.frame(confint(ctr, level = level))
+  
+  # Set contrast order if specified
+  if(!is.null(contrast_order)){
+    df$contrast <- factor(df$contrast, levels = contrast_order)
+  }
+  
+  # Default x-axis label if none provided
+  if(is.null(xlab)){
+    xlab <- paste0("Effect size (vs ", ref_strain, " ", ref_treatment, ")")
+  }
+  
+  # Plot
+  ggplot2::ggplot(df, ggplot2::aes(x = estimate, y = contrast, color = contrast)) +
+    ggplot2::geom_vline(xintercept = 0, linetype = "dashed", color = "#E64B35FF") +
+    ggplot2::geom_point(size = 3) +
+    ggplot2::geom_errorbarh(
+      ggplot2::aes(xmin = lower.CL, xmax = upper.CL),
+      height = 0.2
+    ) +
+    ggplot2::labs(
+      x = xlab,
+      y = NULL
+    ) +
+    ggplot2::theme_minimal(base_size = 12)+
+    ggplot2::theme(legend.position = 'none',
+        axis.text = element_text(size = 12),
+        axis.line.x = element_line(color = "black", size = 0.5),
+      axis.line.y = element_line(color = "black", size = 0.5))
+  
+}
+
+
+
+#function for coxme forest plots for thermocycling
+forest_coxme <- function(model,
+                          strain = "Strain",
+                          treatment = "Treatment.ID",
+                          ref_strain = "N2",
+                          ref_treatment = "ev",
+                          level = 0.95,
+                          xlab = "Log Hazard Ratio") {
+  
+  # Fixed contrast order
+  contrast_order <- c(
+    "N2 daf - N2 ev",
+    "(SKN-1 ev) - N2 ev",
+    "(SKN-1 daf) - N2 ev"
+  )
+  
+  # Estimated marginal means
+  emm <- emmeans::emmeans(model, as.formula(paste("~", strain, "*", treatment)))
+  
+  # Reference index
+  ref_idx <- which(
+    emm@grid[[strain]] == ref_strain &
+    emm@grid[[treatment]] == ref_treatment
+  )
+  
+  # Contrasts vs baseline
+  ctr <- emmeans::contrast(emm, "trt.vs.ctrl", ref = ref_idx)
+  
+  # Convert to data frame
+  df <- as.data.frame(ctr)
+  
+  # Manually compute confidence intervals
+  z <- qnorm(1 - (1 - level)/2)
+  df$lower.CL <- df$estimate - z * df$SE
+  df$upper.CL <- df$estimate + z * df$SE
+  
+  # Apply fixed contrast order
+  df$contrast <- factor(df$contrast, levels = contrast_order)
+  
+  # Plot
+  ggplot2::ggplot(df, ggplot2::aes(x = estimate, y = contrast, color = contrast)) +
+    ggplot2::geom_vline(xintercept = 0, linetype = "dashed", color = "#E64B35FF") +
+    ggplot2::geom_point(size = 3) +
+    ggplot2::geom_errorbarh(
+      ggplot2::aes(xmin = lower.CL, xmax = upper.CL),
+      height = 0.2
+    ) +
+    ggplot2::labs(
+      x = xlab,
+      y = NULL
+    ) +
+    ggplot2::theme_minimal(base_size = 13) +
+    ggplot2::theme(
+      axis.line = ggplot2::element_blank(),
+      axis.line.x = ggplot2::element_line(color = "black", size = 0.5),
+      axis.line.y = ggplot2::element_line(color = "black", size = 0.5),
+      legend.position = 'none',
+      axis.text = element_text(size = 12)
+    )
+}
+
+
+#function for coxme forest plots for different temperature treatments + short thermocycle 
+forest_coxme <- function(model,
+                          strain = "Strain",
+                          treatment = "Treatment.ID",
+                          ref_strain = "N2",
+                          ref_treatment = "ev",
+                          level = 0.95,
+                          xlab = "Log Hazard Ratio") {
+  
+  # Fixed contrast order
+  contrast_order <- c(
+    "N2 daf - N2 ev",
+    "(SKN-1 ev) - N2 ev",
+    "(SKN-1 daf) - N2 ev"
+  )
+  
+  # Estimated marginal means
+  emm <- emmeans::emmeans(model, as.formula(paste("~", strain, "*", treatment)))
+  
+  # Reference index
+  ref_idx <- which(
+    emm@grid[[strain]] == ref_strain &
+    emm@grid[[treatment]] == ref_treatment
+  )
+  
+  # Contrasts vs baseline
+  ctr <- emmeans::contrast(emm, "trt.vs.ctrl", ref = ref_idx)
+  
+  # Convert to data frame
+  df <- as.data.frame(ctr)
+  
+  # Manually compute confidence intervals
+  z <- qnorm(1 - (1 - level)/2)
+  df$lower.CL <- df$estimate - z * df$SE
+  df$upper.CL <- df$estimate + z * df$SE
+  
+  # Apply fixed contrast order
+  df$contrast <- factor(df$contrast, levels = contrast_order)
+  
+  # Plot
+  ggplot2::ggplot(df, ggplot2::aes(x = estimate, y = contrast, color = contrast)) +
+    ggplot2::geom_vline(xintercept = 0, linetype = "dashed", color = "#E64B35FF") +
+    ggplot2::geom_point(size = 3) +
+    ggplot2::geom_errorbarh(
+      ggplot2::aes(xmin = lower.CL, xmax = upper.CL),
+      height = 0.2
+    ) +
+    ggplot2::labs(
+      x = xlab,
+      y = NULL
+    ) +
+    ggplot2::theme_minimal(base_size = 13) +
+    ggplot2::theme(
+      axis.line = ggplot2::element_blank(),
+      axis.line.x = ggplot2::element_line(color = "black", size = 0.5),
+      axis.line.y = ggplot2::element_line(color = "black", size = 0.5),
+      legend.position = 'none',
+      axis.text = element_text(size = 12)
+    )
+}
+
+
+forest_cox_strain <- function(model,
+                              treatment = "Treatment.ID",
+                              ref_treatment = NULL,
+                              level = 0.95,
+                              xlab = "Log Hazard Ratio",
+                              treatment_labels = NULL,
+                              vline_color = "grey50") {
+  
+  # Estimated marginal means
+  emm <- emmeans::emmeans(model, as.formula(paste("~", treatment)))
+  
+  # Reference index
+  if(!is.null(ref_treatment)){
+    ref_idx <- which(emm@grid[[treatment]] == ref_treatment)
+    ctr <- emmeans::contrast(emm, "trt.vs.ctrl", ref = ref_idx)
+  } else {
+    ctr <- emmeans::contrast(emm, "pairwise")
+  }
+  
+  # Convert to data frame
+  df <- as.data.frame(ctr)
+  
+  # Compute CI manually
+  z <- qnorm(1 - (1 - level)/2)
+  df$lower.CL <- df$estimate - z * df$SE
+  df$upper.CL <- df$estimate + z * df$SE
+  
+  # Create a clean label column for plotting
+  df$Treatment <- gsub(paste0(" - .*"), "", df$contrast)
+  
+  # Apply optional treatment label order
+  if(!is.null(treatment_labels)){
+    df$Treatment <- factor(df$Treatment, levels = treatment_labels)
+  } else {
+    df$Treatment <- factor(df$Treatment)
+  }
+  
+  # Plot
+  ggplot2::ggplot(df, ggplot2::aes(x = estimate, y = Treatment, color = Treatment)) +
+    ggplot2::geom_vline(xintercept = 0, linetype = "dashed", color = vline_color) +
+    ggplot2::geom_point(size = 3) +
+    ggplot2::geom_errorbarh(
+      ggplot2::aes(xmin = lower.CL, xmax = upper.CL),
+      height = 0.2
+    ) +
+    ggplot2::labs(
+      x = xlab,
+      y = NULL
+    ) +
+    ggplot2::theme_minimal(base_size = 13) +
+    ggplot2::theme(
+      axis.line = ggplot2::element_blank(),
+      axis.text = ggplot2::element_text(size = 12),
+      axis.line.x = ggplot2::element_line(color = "black", size = 0.5),
+      axis.line.y = ggplot2::element_line(color = "black", size = 0.5)
+    )
+}
+
+
+
+```
+
+
+#SKN-1 in 20C
+Reproduction and lifespan assays in SKN-1 mutants with daf-2 or ev (control) RNAi treatments in 20C
+
+##Reproduction
+```{r}
+
+#put data into long form
+skn_long <- SKN_20C_rep %>% 
+  pivot_longer(
+    cols = c(`D1`, `D2`, `D3`, `D4`, `D5`), 
+    names_to = "Day",
+    values_to = "value")
+
+summarySE(thermo_HF_LS, groupvars = c('Strain','Treatment.ID'), measurevar = 'Age')
+
+
+#select only columns needed
+skn_long <- skn_long %>%
+  dplyr::select(c('ID','Treatment','Day','value'))
+
+#rename treatments
+skn_long$Treatment <- as.factor(skn_long$Treatment)
+levels(skn_long$Treatment) <- list('ev' = 'ev', 'daf-2' = 'daf')
+
+
+#get rid of NAs
+skn_long <- na.omit(skn_long)
+
+#age-specific reproduction plot for SKN-1 mutants with daf or ev
+skn_20C_p <-ggplot(data=skn_long, aes(x=factor(Day), y=value, group=Treatment, color=Treatment))+
+  geom_jitter(alpha = 0.2, position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.5))+
+  stat_summary(fun.data="mean_cl_boot", geom="errorbar", size = 1.2, width=0.0, position = position_dodge(0.5)) +
+  stat_summary(fun.data="mean_cl_boot", geom="point", size = 3, position = position_dodge(0.5)) +
+  stat_summary(fun.data="mean_cl_boot", geom="line",  size=1.2, position = position_dodge(0.5)) +
+  theme_classic()+
+  labs(y="Offspring number", x="Day")+
+  labs(col="")+
+  theme(axis.title.y = element_text(size=14))+
+  theme(axis.title.x = element_text(size=14))+
+  theme(axis.text= element_text(size = 12))+
+  theme(legend.text = element_text(size = 12))+
+  scale_color_manual(values=c('#E64B35FF','#4DBBD5FF'), labels = c(skn_ev_label, skn_daf_label))+
+  theme(legend.key.width = unit(0.5,"cm"))+
+  coord_cartesian(ylim = c(0,225))+
+  theme(legend.position = c(0.1, 0.9))
+
+skn_20C_p
+
+#Get Day into a numeric form
+#Change day to a numeric variable for analysis
+skn_long$Day <- as.factor(skn_long$Day)
+levels(skn_long$Day) <- list('1' = 'D1', '2' = 'D2', '3' = 'D3', '4' = 'D4', '5' = 'D5')
+skn_long$Day <- as.numeric(skn_long$Day)
+
+#set ev as reference level
+skn_long$Treatment <- as.factor(skn_long$Treatment)
+skn_long$Treatment <- relevel(skn_long$Treatment, ref = 'ev')
+
+##############
+#### LRS
+##############
+
+#sum up total number of offspring produced over experiment per individual
+totalrep_SKN<-na.omit(as.data.frame.table(tapply(skn_long$value,list(skn_long$Treatment, skn_long$ID),sum)))
+
+#rename columns
+names(totalrep_SKN)<-c("Treatment", "Replicate", "Totrep")
+
+
+#Try a Gamma GLM
+SKN_LRS_m2 <- glm(Totrep ~ Treatment, data = totalrep_SKN, family = Gamma(link = 'log'))
+
+#get contrasts
+lrs_df <- get_contrasts(SKN_LRS_m2, type = "response")
+
+
+#change name of ratio variable to estimate, just to make plot function work
+str(lrs_df)
+lrs_df <- lrs_df %>%
+  dplyr::rename(
+    estimate = ratio
+  )
+
+#LRS forest plot 
+skn_LRS_forest <- forest_plot(
+  lrs_df,
+  xlab = "LRS mean ratio (vs ev)",
+  ref_line = 1
+)
+
+skn_LRS_forest <- skn_LRS_forest + scale_y_discrete(labels = c(GAM_skn_daf_forest_lab))
+
+skn_LRS_forest
+
+
+###########
+#lambda#
+##########
+
+#### Lambda
+#start fresh
+skn_long <- SKN_20C_rep %>% 
+  pivot_longer(
+    cols = c(`D1`, `D2`, `D3`, `D4`, `D5`), 
+    names_to = "Day",
+    values_to = "value")
+
+str(skn_long)
+#keep only columns needed
+skn_long <- skn_long %>%
+  dplyr::select(c('ID', 'Strain','Treatment','Day','value'))
+str(skn_long)
+
+
+#spread data back out
+skn_wide <- spread(skn_long, Day, value)
+
+
+skn_wide <- na.omit(skn_wide)
+
+#calculate Lambda for each individual
+L <- matrix(nrow = nrow(skn_wide), ncol = 4)
+
+for (i in 1:nrow(skn_wide)){
+  Les <- matrix(0, ncol = 7, nrow = 7)
+  diag(Les[-1,]) <- rep(1, 6) # add the 1s for survival probability diagonally
+  Fert <- c(0,0, as.numeric(as.vector(skn_wide[i,][4:8]))) #the columns in data that has the reproductive counts
+  Fert[is.na(Fert)] <- 0 #makes all NAs into 0s
+  Les[1,] <- c(Fert)
+  class(Les) <- "leslie.matrix"
+  Lambda <- popbio::eigen.analysis(Les)$lambda1
+  L[i, 1:4] <- c(paste0(skn_wide$ID[i]), paste0(skn_wide$Strain[i]), paste0(skn_wide$Treatment[i]), Lambda)
+  
+}
+
+#rename columns
+colnames(L)<-c("ID", "Strain", "Treatment", "Lambda")
+
+#make L a data frame
+skn_lam<-as.data.frame(L)
+
+#make sure it's numeric
+skn_lam$Lambda<-as.numeric(as.character(skn_lam$Lambda))
+skn_lam$Treatment <- as.factor(skn_lam$Treatment)
+
+skn_lam$Treatment <- revalue(skn_lam$Treatment, c('ev' = 'control', 'daf' = 'daf-2'))
+skn_lam$Treatment <- relevel(skn_lam$Treatment, ref = 'control')
+
+#analysis 
+skn_lam_mod <- lm(Lambda ~ Treatment, data = skn_lam)
+summary(skn_lam_mod)
+Anova(skn_lam_mod, type = 'II')
+
+
+#get means
+skn_mean_lam <- summarySE(data = skn_lam, measurevar = 'Lambda', groupvars = c('Treatment'))
+skn_mean_lam
+
+#get contrasts for lam and LRS
+lam_df <- get_contrasts(skn_lam_mod)
+lrs_df <- get_contrasts(SKN_LRS_m2, type = "response")
+
+#create lambda forest plot
+skn_lam_forest <- forest_plot(
+  lam_df,
+  xlab = expression(Delta*' Individual fitness (vs ev)'),
+  ref_line = 0
+)
+skn_lam_forest
+
+#add italicised label
+skn_lam_forest <- skn_lam_forest + scale_y_discrete(labels = c(skn_daf_forest_lab))
+
+skn_lam_forest
+
+
+
+```
+
+## Lifespan
+```{r}
+
+#Get rid of NAs
+SKN_20C_LS <- na.omit(SKN_20C_LS)
+
+#Rename daf to daf-2
+SKN_20C_LS$Treatment.ID <- revalue(SKN_20C_LS$Treatment.ID, c('ev' = 'ev', 'daf' = 'daf-2'))
+
+#Make sure Treatment is a factor
+SKN_20C_LS$Treatment.ID <- as.factor(SKN_20C_LS$Treatment.ID)
+
+#Make ev the baseline level
+SKN_20C_LS$Treatment.ID <- relevel(SKN_20C_LS$Treatment.ID, ref = 'ev')
+
+#Check factor levels of treatment
+levels(SKN_20C_LS$Treatment.ID)
+
+#Get rid of empty levels
+SKN_20C_LS$Treatment.ID <- droplevels(SKN_20C_LS$Treatment.ID)
+
+#Plate.ID as a factor not a numerical
+SKN_20C_LS$Plate.ID <- as.factor(SKN_20C_LS$Plate.ID)
+
+#Create survival object for SKN-1 mutants at 20C
+surv_SKN<-survfit(Surv(Age,Event)~Treatment.ID,data=SKN_20C_LS)
+
+#Create survival curve from survival object
+SKN_20C_LS_plot <-ggsurvplot(surv_SKN, ylab="Survival probability\n", data = SKN_20C_LS, size= 0.8, font.ylab= 14, font.xlab= 14, palette=c('#E64B35FF','#4DBBD5FF'), legend = c(0.8, 0.8), legend.title = "", legend.labs = c('ev','daf-2'), title = "", censor = FALSE, xlab = "Day", xlim=c(0,35), break.time.by = 5, position= position_dodge(0.9), font.tickslab = c(12), font.legend = c(12))
+
+SKN_20C_LS_plot <- SKN_20C_LS_plot$plot + scale_colour_manual(values = c('#E64B35FF','#4DBBD5FF'), labels = c(skn_ev_label,skn_daf_label))
+SKN_20C_LS_plot
+
+
+#Mixed effects cox model for a effect of daf-2 on SKN-1 mutant lifespan
+cox_SKN_20C <- coxme(Surv(Age, Event) ~ Treatment.ID + (1|Plate.ID), data = SKN_20C_LS)
+summary(cox_SKN_20C)
+Anova(cox_SKN_20C, type = 'II')
+
+#test model
+cox.zph(cox_SKN_20C)#OK
+
+
+#Use emmeans because of negligible effect of plate.ID
+SKN_emm <- emmeans(cox_SKN_20C, ~ Treatment.ID)  # EMMs of treatment 
+SKN_emm
+
+#Get contrasts
+contrasts_SKN <- contrast(SKN_emm, method = "revpairwise")
+
+#make a dataframe out of the contrast summary
+df_SKN <- as.data.frame(summary(contrasts_SKN, infer = TRUE))
+
+# Rename columns
+names(df_SKN)[names(df_SKN) == "estimate"] <- "logHR"
+df_SKN$HR <- exp(df_SKN$logHR)
+df_SKN$lower.HR <- exp(df_SKN$asymp.LCL)
+df_SKN$upper.HR <- exp(df_SKN$asymp.UCL)
+
+#fix labels
+df_SKN$Comparison <- df_SKN$contrast
+
+#Create forest plot for differences of treatments within strains
+SKN_contrasts <- ggplot(df_SKN, aes(x = Comparison, y = logHR)) +
+  geom_point(size = 4, color = '#4DBBD5FF') +
+  geom_hline(yintercept = 0, linetype = "dashed", size = 1.2, color = '#E64B35FF', linewidth = 0.8) +
+  geom_errorbar(aes(ymin = asymp.LCL, ymax = asymp.UCL), width = 0.2, size = 1.1,color ='#4DBBD5FF')+
+  coord_flip() +
+  scale_x_discrete(labels = c(skn_daf_forest_lab))+
+  labs(
+    title = "",
+    x = "",
+    y = "Log hazard ratio (HR)"
+  ) +
+  theme_minimal(base_size = 12)+
+  theme(axis.text = element_text(size = 13),
+        axis.title = element_text(size = 14),
+        legend.position = 'none')
+
+SKN_contrasts
+
+#Exclude matricides
+SKN_20C_LS_NM <- SKN_20C_LS %>%
+  filter(Cause != 'M')
+
+
+#Create survival object
+surv_SKN_NM<-survfit(Surv(Age,Event)~Treatment.ID,data=SKN_20C_LS_NM)
+
+#Survival plot
+SKN_NM_LS_plot <-ggsurvplot(surv_SKN_NM, ylab="Survival probability", data = SKN_20C_LS_NM, size= 0.8, font.ylab= 14, font.xlab= 14, palette=c('#E64B35FF','#4DBBD5FF'), legend = c(0.8, 0.8), legend.title = "", legend.labs = c('ev','daf-2'), title = "", censor = FALSE, xlab = "Day", xlim=c(0,35), break.time.by = 5, position= position_dodge(0.9), font.tickslab = c(12), font.legend = c(12))
+
+SKN_NM_LS_plot
+
+
+SKN_NM_LS_plot <- SKN_NM_LS_plot$plot + scale_colour_manual(values = c('#E64B35FF','#4DBBD5FF'), labels = c(skn_ev_label,skn_daf_label))
+SKN_NM_LS_plot
+
+#Cox mixed effects model
+cox_SKN_20C_NM <- coxme(Surv(Age, Event) ~ Treatment.ID + (1|Plate.ID), data = SKN_20C_LS_NM)
+summary(cox_SKN_20C_NM)
+Anova(cox_SKN_20C_NM, type = 'II')
+#Test model
+cox.zph(cox_SKN_20C_NM)#OK
+
+#Use emmeans because of negligible effect of plate.ID
+SKN_NM_emm <- emmeans(cox_SKN_20C_NM, ~ Treatment.ID)  # EMMs of treatment 
+SKN_NM_emm
+
+#Get contrasts
+contrasts_SKN_NM <- contrast(SKN_NM_emm, method = "revpairwise")
+
+#make a dataframe out of the contrast summary
+df_SKN_NM <- as.data.frame(summary(contrasts_SKN_NM, infer = TRUE))
+
+# Rename columns
+names(df_SKN_NM)[names(df_SKN_NM) == "estimate"] <- "logHR"
+df_SKN_NM$HR <- exp(df_SKN_NM$logHR)
+df_SKN_NM$lower.HR <- exp(df_SKN_NM$asymp.LCL)
+df_SKN_NM$upper.HR <- exp(df_SKN_NM$asymp.UCL)
+
+#fix labels
+df_SKN_NM$Comparison <- df_SKN_NM$contrast
+
+#Create forest plot for differences of treatments within strains
+SKN_NM_contrasts <- ggplot(df_SKN_NM, aes(x = Comparison, y = logHR)) +
+  geom_point(size = 4, color = '#4DBBD5FF') +
+  geom_hline(yintercept = 0, linetype = "dashed", size = 1.2, color = '#E64B35FF', linewidth = 0.8) +
+  geom_errorbar(aes(ymin = asymp.LCL, ymax = asymp.UCL), width = 0.2, size = 1.1,color ='#4DBBD5FF')+
+  coord_flip() +
+  scale_x_discrete(labels = c(skn_daf_forest_lab))+
+  labs(
+    title = "",
+    x = "",
+    y = "Log hazard ratio (HR)"
+  ) +
+  theme_minimal(base_size = 12)+
+  theme(axis.text = element_text(size = 13),
+        axis.title = element_text(size = 14),
+        legend.position = 'none')
+
+SKN_NM_contrasts
+
+#need to run previous code chunk to combine all plots
+
+#Group all plots for 20C skn-1 data
+SKN_rep_LRSLAM <- ggarrange(skn_LRS_forest, skn_lam_forest, ncol = 2, labels = c('C','D'))
+SKN_rep_LRSLAM
+
+SKN_20_all <- ggarrange(SKN_NM_LS_plot, skn_20C_p, SKN_rep_LRSLAM, nrow = 3, heights = c(1.5, 1.5, 1), labels = c('A', 'B', ''), common.legend = T)
+SKN_20_all
+
+
+#ggsave(plot = SKN_20_all, "SKN_20C_all.png", bg = 'white',width = 7, height = 9, dpi = 300)
+
+#Matricides included for suppmat
+SKN_20C_LS_all <- ggarrange(SKN_20C_LS_plot, SKN_contrasts+theme(plot.margin = margin(t = 5, r = 45, b = 5, l = 45, unit = "pt")), nrow = 2, heights = c(2,1), common.legend = T, labels = c('A','B'))
+SKN_20C_LS_all
+#ggsave("SKN_20C_LS_all.png", plot = SKN_20C_LS_all, bg = 'white',width = 6, height = 6, dpi = 300, units = "in")
+
+
+```
+
+
+#15C first Thermocycling
+
+Reproduction and lifespan assays following 24 hour thermo-cycling between 15 and 25C with 15C as starting temperature across four treatments: SKN-1 mutant + daf-2 RNAi, SKN-1 mutant + ev (control), N2 + daf-2 RNAi, N2 + ev
+
+## Reproduction plots
+```{r}
+
+#Dataframe into long form
+thermo_c_long <- thermo_CF_rep %>% 
+  pivot_longer(
+    cols = c(`D1`,`D2`, `D3`, `D4`, `D5`,`D6`, `D7`,`D8`,`D9`), 
+    names_to = "Day",
+    values_to = "value")
+
+
+#Remove unneeded columns
+thermo_c_long <- thermo_c_long %>%
+  dplyr::select(c('ID','Strain', 'Treatment','Day','value'))
+
+#Remove NAs
+thermo_c_long <- na.omit(thermo_c_long)
+
+#Combine strain and treatment into one variable for plotting
+thermo_c_long <- thermo_c_long %>%
+  unite(Str_tr, c('Strain', 'Treatment'), remove = F)
+
+#Set levels of StrainxTreatment
+thermo_c_long$Str_tr <- factor(thermo_c_long$Str_tr, levels = c("N2_ev", "N2_daf", "SKN-1_ev", "SKN-1_daf"))
+
+#change names of Str_tr
+levels(thermo_c_long$Str_tr) <- list('N2 ev' = 'N2_ev', 'N2 daf-2' = 'N2_daf', 'SKN-1 ev' = 'SKN-1_ev', 'SKN-1 daf-2' = 'SKN-1_daf')
+
+#Create colour palette
+palette <- c('#E64B35FF','#4DBBD5FF', '#00A087FF', '#3C5488FF')
+
+#Age-specific reproduction plot
+thermo_C_p <-ggplot(data=thermo_c_long, aes(x=factor(Day), y=value, group=Str_tr, color=Str_tr))+
+  geom_jitter(alpha = 0.2, position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.5))+
+  stat_summary(fun.data="mean_cl_boot", geom="errorbar", size = 1.2, width=0.0, position = position_dodge(0.5)) +
+  stat_summary(fun.data="mean_cl_boot", geom="point", size = 3, position = position_dodge(0.5)) +
+  stat_summary(fun.data="mean_cl_boot", geom="line",  size=1.2, position = position_dodge(0.5)) +
+  theme_classic()+
+  labs(y="Offspring number", x="Day")+
+  labs(col="")+
+  labs(title = 'Start 15\u00B0C')+   
+  theme(axis.title.y = element_text(size=12))+
+  theme(axis.title.x = element_text(size=12))+
+  theme(axis.text= element_text(size = 12))+
+  theme(legend.text = element_text(size = 12))+
+  theme(plot.title = element_text(size =12, face = 'bold'))+
+  scale_color_manual(values=palette, labels = c('N2 ev', N2_daf_label, skn_ev_label, skn_daf_label))+
+  theme(legend.key.width = unit(0.5,"cm"))+
+  coord_cartesian(ylim = c(0,175))+
+  theme(legend.position = c(0.8, 0.9))
+
+thermo_C_p
+
+
+# Lifetime reproduction success
+
+#Create dataframe containing Sum of total reproduction for each individual
+totalrep_CF<-na.omit(as.data.frame.table(tapply(thermo_c_long$value,list(thermo_c_long$Strain, thermo_c_long$Treatment, thermo_c_long$Str_tr, thermo_c_long$ID),sum)))
+
+#rename columns
+names(totalrep_CF)<-c('Strain', 'Treatment', "Str_tr", "Replicate", "Totrep")
+
+#Set factor levels for 
+totalrep_CF$Str_tr <- factor(totalrep_CF$Str_tr, levels = c("N2 ev", "N2 daf-2", "SKN-1 ev", "SKN-1 daf-2"))
+
+#linear model
+LRS_CF2 <- lm(Totrep ~ Strain + Treatment, data = totalrep_CF)
+
+
+LRS_CF_forest <- forest_emmeans(LRS_CF2, xlab = lrs_lab)
+LRS_CF_forest
+
+#change colours and labels
+LRS_CF_forest <- LRS_CF_forest + 
+  scale_colour_manual(values = c('#4DBBD5FF', '#00A087FF', '#3C5488FF'))+ 
+  scale_y_discrete(labels =c(N2_daf_label, skn_ev_label, skn_daf_label))+ 
+  theme(legend.position = 'none',
+        axis.text = element_text(size = 12))
+
+LRS_CF_forest
+
+
+#calculate lambda
+#Dataframe into long form to start fresh
+thermo_c_long <- thermo_CF_rep %>% 
+  pivot_longer(
+    cols = c(`D1`,`D2`, `D3`, `D4`, `D5`,`D6`, `D7`,`D8`,`D9`), 
+    names_to = "Day",
+    values_to = "value")
+
+#create a level order for 10 days
+level_order <- c('D1', 'D2', 'D3', 'D4', 'D5','D6','D7','D8','D9')
+
+#reorder levels so 10 is last
+thermo_c_long$Day <- factor(thermo_c_long$Day, levels = level_order)
+
+
+#spread data back out
+thermo_c_wide <- spread(thermo_c_long, Day, value)
+str(thermo_c_wide)
+
+thermo_c_wide <- thermo_c_wide %>%
+  dplyr::select(-c(Matricide))
+
+thermo_c_wide <- na.omit(thermo_c_wide)
+
+#calculate Lambda for each individual
+L <- matrix(nrow = nrow(thermo_c_wide), ncol = 4)
+
+for (i in 1:nrow(thermo_c_wide)){
+  Les <- matrix(0, ncol = 11, nrow = 11)
+  diag(Les[-1,]) <- rep(1, 10) # add the 1s for survival probability diagonally
+  Fert <- c(0,0, as.numeric(as.vector(thermo_c_wide[i,][4:12]))) #the columns in data that has the reproductive counts
+  Fert[is.na(Fert)] <- 0 #makes all NAs into 0s
+  Les[1,] <- c(Fert)
+  class(Les) <- "leslie.matrix"
+  Lambda <- popbio::eigen.analysis(Les)$lambda1
+  L[i, 1:4] <- c(paste0(thermo_c_wide$ID[i]), paste0(thermo_c_wide$Strain[i]), paste0(thermo_c_wide$Treatment[i]), Lambda)
+  
+}
+
+#rename columns
+colnames(L)<-c("ID", "Strain", "Treatment", "Lambda")
+
+#make L a data frame
+thermo_c_lam<-as.data.frame(L)
+
+#make sure it's numeric
+thermo_c_lam$Lambda<-as.numeric(as.character(thermo_c_lam$Lambda))
+thermo_c_lam$Treatment <- as.factor(thermo_c_lam$Treatment)
+
+#linear model
+thermo_c_lam_m2 <- lm(Lambda ~ Strain + Treatment, data = thermo_c_lam)
+
+Lam_CF_forest <- forest_emmeans(thermo_c_lam_m2, xlab = lam_lab)
+Lam_CF_forest
+
+#change colours and labels
+Lam_CF_forest <- Lam_CF_forest + 
+  scale_colour_manual(values = c('#4DBBD5FF', '#00A087FF', '#3C5488FF'))+
+  scale_y_discrete(labels =c(N2_daf_label, skn_ev_label, skn_daf_label))
+
+Lam_CF_forest
+
+CF_Lam_LRS <- ggarrange(LRS_CF_forest+theme(plot.margin = unit(c(0, 0.5, 0.25, 0.45), 'cm')),
+                        Lam_CF_forest+theme(plot.margin = unit(c(0, 0.5, 0.25, 0.42), 'cm')),
+                        nrow = 2, labels = c('C','E'))
+CF_Lam_LRS
+
+CF_rep_all <- ggarrange(thermo_C_p+theme(plot.margin = unit(c(0, 0.5,0, 0.45), 'cm')), CF_Lam_LRS, nrow = 2, labels = c('A',''), heights = c(1, 1), common.legend = T)
+CF_rep_all
+
+```
+
+## Lifespan plots
+```{r}
+
+#Create a combined variable for strain and treatment since forest plot can't do interactions
+thermo_CF_LS <- thermo_CF_LS %>%
+  unite(Str_tr, c('Strain', 'Treatment.ID'), remove = F)
+
+
+
+#Set levels
+thermo_CF_LS$Tr_str <- factor(thermo_CF_LS$Str_tr, levels = c("N2_ev", "N2_daf", "SKN-1_ev", "SKN-1_daf"))
+
+#Set as factor
+thermo_CF_LS$Str_tr <- as.factor(thermo_CF_LS$Str_tr)
+
+#Set N2_ev as baseline level
+thermo_CF_LS$Str_tr <- relevel(thermo_CF_LS$Str_tr, ref = 'N2_ev')
+
+#Exclude unnatural causes of mortality, L = loss, W = wall, E = explosion
+thermo_CF_LS <- thermo_CF_LS %>%
+  filter(thermo_CF_LS$Cause != 'L' & thermo_CF_LS$Cause !='W' & thermo_CF_LS$Cause != 'E')
+
+
+#Create survival object for plotting Kaplan Meier curves
+surv_CF<-survfit(Surv(Age,Event)~Str_tr,data=thermo_CF_LS)
+
+#Survival curve plot
+THC_LS_plot <-ggsurvplot(surv_CF, ylab="Survival probability", data = thermo_CF_LS, size= 0.8, font.ylab= 14, font.xlab= 14, legend = c(0.3, 0.4), legend.title = "", title = "Start 15\u00B0C", censor = FALSE, xlab = "Day", xlim=c(0,40), break.time.by = 5, palette = palette, position= position_dodge(0.9), legend.labs=c("N2 ev", "N2 daf-2", "SKN-1 ev", "SKN-1 daf-2"),font.tickslab = c(12),  font.legend = c(13), font.title = c(14))
+THC_LS_plot
+
+THC_LS_plot <- THC_LS_plot$plot + scale_color_manual(labels = c(  'N2 ev',N2_daf_label,skn_ev_label,skn_daf_label), values = c('#E64B35FF', '#4DBBD5FF','#00A087FF','#3C5488FF'))+theme(plot.title = element_text(face = 'bold'))
+
+THC_LS_plot
+#Create dataframe excluding matricides
+thermo_CF_LSNM <- thermo_CF_LS %>%
+  filter(thermo_CF_LS$Cause != 'M')
+
+
+#Create survival object
+survCF_NM<-survfit(Surv(Age,Event)~Str_tr,data=thermo_CF_LSNM)
+
+#Create survival curves
+LS_plot_matcen_THC <-ggsurvplot(survCF_NM, ylab="Survival probability", data = thermo_CF_LSNM, size= 0.8, font.ylab= 12, font.xlab= 12, legend = c(0.3, 0.4), legend.title = "", palette = palette, title = "Start 15\u00B0C", censor = FALSE, xlab = "Day", xlim=c(0,40), break.time.by = 5, position= position_dodge(0.9), legend.labs=c("N2 ev", "N2 daf-2", "SKN-1 ev", "SKN-1 daf-2"), font.tickslab = c(12), font.legend = c(12), font.title = c(12))
+LS_plot_matcen_THC
+
+
+LS_plot_matcen_THC <- LS_plot_matcen_THC$plot + scale_color_manual(labels = c(  'N2 ev',N2_daf_label,skn_ev_label,skn_daf_label), values = c('#E64B35FF', '#4DBBD5FF','#00A087FF','#3C5488FF'))+theme(plot.title = element_text(face = 'bold'))
+
+LS_plot_matcen_THC
+#Sometimes NAs are produced creating an additional non-existent factor level - omit NAs first
+thermo_CF_LS <- na.omit(thermo_CF_LS)
+thermo_CF_LSNM <- na.omit(thermo_CF_LSNM)
+
+#Drop non-existent factor level - or cox models get confused
+thermo_CF_LS$Str_tr <- droplevels(thermo_CF_LS$Str_tr)
+levels(thermo_CF_LS$Str_tr)
+thermo_CF_LSNM$Str_tr <- droplevels(thermo_CF_LSNM$Str_tr)
+
+#Mixed effects cox proportional hazards model to test effect of treatment on survival probability
+CF_cox <- coxme(Surv(Age, Event) ~ Strain * Treatment.ID + (1|Plate.ID), data = thermo_CF_LS)
+summary(CF_cox)
+Anova(CF_cox, type = 'III')
+
+#Test model 
+cox.zph(CF_cox)#Strain * Treatment is fine
+plot(cox.zph(CF_cox))
+
+
+CF_cox_forest <- forest_coxme(CF_cox, xlab = "Log hazard ratio")
+CF_cox_forest
+
+CF_cox_forest <- CF_cox_forest + scale_color_manual(values = c('#4DBBD5FF','#00A087FF','#3C5488FF'))+ scale_y_discrete(labels = c(N2_daf_label,skn_ev_label,skn_daf_label))
+
+
+CF_cox_forest
+
+
+#Mixed effects cox proportional hazards model to test effect of treatment on survival prob
+CF_NM_cox <- coxme(Surv(Age, Event) ~ Strain * Treatment.ID + (1|Plate.ID), data = thermo_CF_LSNM)
+summary(CF_NM_cox)
+Anova(CF_NM_cox, type = 'III')
+
+#test model
+plot(cox.zph(CF_NM_cox))
+cox.zph(CF_NM_cox)#close p-values - combined with plot acceptable 
+
+CF_NM_cox_forest <- forest_coxme(CF_NM_cox, xlab = "Log hazard ratio")
+CF_NM_cox_forest
+
+CF_NM_cox_forest <- CF_NM_cox_forest + scale_color_manual(values = c('#4DBBD5FF','#00A087FF','#3C5488FF')) + scale_y_discrete(labels = c(N2_daf_label,skn_ev_label,skn_daf_label))
+
+
+CF_NM_cox_forest
+
+```
+
+
+# Hot first thermocycling
+
+Reproduction and lifespan assays following 24 hour thermo-cycling between 15 and 25C with 25C as starting temperature across four treatments: SKN-1 mutant + daf-2 RNAi, SKN-1 mutant + ev (control), N2 + daf-2 RNAi, N2 + ev
+
+## Reproduction
+```{r}
+
+#Put dataframe into long form
+thermo_h_long <- thermo_HF_rep %>% 
+  pivot_longer(
+    cols = c(`D1`,`D2`, `D3`, `D4`, `D5`,`D6`, `D7`,`D8`,`D9`), 
+    names_to = "Day",
+    values_to = "value")
+
+#Keep only columns that are necessary
+thermo_h_long <- thermo_h_long %>%
+  dplyr::select(c('ID','Strain', 'Treatment','Day','value'))
+
+#Get rid of NAs
+thermo_h_long <- na.omit(thermo_h_long)
+
+#Create a combined strain and treatment column for plotting
+thermo_h_long <- thermo_h_long %>%
+  unite(Str_tr, c('Strain', 'Treatment'), remove = F)
+
+#Set factor levels for Strain x Treatment
+thermo_h_long$Str_tr <- factor(thermo_h_long$Str_tr, levels = c("N2_ev", "N2_daf", "SKN-1_ev", "SKN-1_daf"))
+
+#change names of Str_tr
+levels(thermo_h_long$Str_tr) <- list('N2 ev' = 'N2_ev', 'N2 daf-2' = 'N2_daf', 'SKN-1 ev' = 'SKN-1_ev', 'SKN-1 daf-2' = 'SKN-1_daf')
+
+#Age-specific reproduction plot
+thermo_H_p <-ggplot(data=thermo_h_long, aes(x=factor(Day), y=value, group=Str_tr, color=Str_tr))+
+  geom_jitter(alpha = 0.2, position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.5))+
+  stat_summary(fun.data="mean_cl_boot", geom="errorbar", size = 1, width=0.0, position = position_dodge(0.5)) +
+  stat_summary(fun.data="mean_cl_boot", geom="point", size = 2, position = position_dodge(0.5)) +
+  stat_summary(fun.data="mean_cl_boot", geom="line",  size=1, position = position_dodge(0.5)) +
+  theme_classic()+
+  labs(y="Offspring number", x="Day")+
+  labs(col="")+
+  labs(title = 'Start 25\u00B0C')+
+  theme(plot.title = element_text(size = 12, face = 'bold'))+
+  theme(axis.title.y = element_text(size=12))+
+  theme(axis.title.x = element_text(size=12))+
+  theme(axis.text= element_text(size = 12))+
+  theme(legend.text = element_text(size = 12))+
+  scale_color_manual(values=palette, labels = c('N2 ev', N2_daf_label, skn_ev_label, skn_daf_label))+
+  theme(legend.key.width = unit(0.5,"cm"))+
+  coord_cartesian(ylim = c(0,225))+
+  theme(legend.position = c(0.8, 0.9))
+
+thermo_H_p
+
+#Calculate total reproduction over experiment per individual
+totalrep_HF<-na.omit(as.data.frame.table(tapply(thermo_h_long$value,list(thermo_h_long$Strain, thermo_h_long$Treatment, thermo_h_long$Str_tr, thermo_h_long$ID),sum)))
+
+#rename columns
+names(totalrep_HF)<-c('Strain','Treatment',"Str_tr", "Replicate", "Totrep")
+
+#change factor levels
+totalrep_HF$Str_tr <- factor(totalrep_HF$Str_tr, levels = c("N2 ev", "N2 daf-2", "SKN-1 ev", "SKN-1 daf-2"))
+
+
+
+totalrep_HF$Treatment <- relevel(totalrep_HF$Treatment, ref = 'ev')
+
+#linear model
+LRS_HF_m2 <- lm(Totrep ~ Treatment + Strain, data = totalrep_HF)
+
+
+LRS_HF_forest <- forest_emmeans(LRS_HF_m2, xlab = lrs_lab)
+
+
+LRS_HF_forest <- LRS_HF_forest + 
+  scale_colour_manual(values = c('#4DBBD5FF', '#00A087FF', '#3C5488FF'))+ 
+  scale_y_discrete(labels =c(N2_daf_label, skn_ev_label, skn_daf_label))
+
+LRS_HF_forest
+
+#Dataframe into long form to start fresh
+thermo_h_long <- thermo_HF_rep %>% 
+  pivot_longer(
+    cols = c(`D1`,`D2`, `D3`, `D4`, `D5`,`D6`, `D7`,`D8`,`D9`), 
+    names_to = "Day",
+    values_to = "value")
+
+#create a level order for 10 days
+level_order <- c('D1', 'D2', 'D3', 'D4', 'D5','D6','D7','D8','D9')
+
+#reorder levels so 10 is last
+thermo_h_long$Day <- factor(thermo_h_long$Day, levels = level_order)
+
+
+#spread data back out
+thermo_h_wide <- spread(thermo_h_long, Day, value)
+str(thermo_h_wide)
+
+thermo_h_wide <- thermo_h_wide %>%
+  dplyr::select(-c(Matricide))
+
+thermo_h_wide <- na.omit(thermo_h_wide)
+
+#calculate Lambda for each individual
+L <- matrix(nrow = nrow(thermo_h_wide), ncol = 4)
+
+for (i in 1:nrow(thermo_h_wide)){
+  Les <- matrix(0, ncol = 11, nrow = 11)
+  diag(Les[-1,]) <- rep(1, 10) # add the 1s for survival probability diagonally
+  Fert <- c(0,0, as.numeric(as.vector(thermo_h_wide[i,][4:12]))) #the columns in data that has the reproductive counts
+  Fert[is.na(Fert)] <- 0 #makes all NAs into 0s
+  Les[1,] <- c(Fert)
+  class(Les) <- "leslie.matrix"
+  Lambda <- popbio::eigen.analysis(Les)$lambda1
+  L[i, 1:4] <- c(paste0(thermo_h_wide$ID[i]), paste0(thermo_h_wide$Strain[i]), paste0(thermo_h_wide$Treatment[i]), Lambda)
+  
+}
+
+#rename columns
+colnames(L)<-c("ID", "Strain", "Treatment", "Lambda")
+
+#make L a data frame
+thermo_h_lam<-as.data.frame(L)
+
+#make sure it's numeric
+thermo_h_lam$Lambda<-as.numeric(as.character(thermo_h_lam$Lambda))
+thermo_h_lam$Treatment <- as.factor(thermo_h_lam$Treatment)
+
+
+#linear model
+thermo_h_lam_m1 <- lm(Lambda ~ Strain * Treatment, data = thermo_h_lam)
+
+Lam_HF_forest <- forest_emmeans(thermo_h_lam_m1, xlab = lam_lab)
+
+#change colours and labels
+Lam_HF_forest <- Lam_HF_forest + 
+  scale_colour_manual(values = c('#4DBBD5FF', '#00A087FF', '#3C5488FF'))+ 
+  scale_y_discrete(labels =c(N2_daf_label, skn_ev_label, skn_daf_label))
+
+
+Lam_HF_forest
+
+
+
+
+HF_Lam_LRS <- ggarrange(LRS_HF_forest+theme(plot.margin = unit(c(0, 0.5, 0.25, 0.45), 'cm')),
+                        Lam_HF_forest+theme(plot.margin = unit(c(0, 0.5, 0.25, 0.45), 'cm')),
+                        nrow = 2, labels = c('D','F'))
+HF_Lam_LRS
+
+HF_rep_all <- ggarrange(thermo_H_p+theme(plot.margin = unit(c(0, 0.5,0, 0.45), 'cm')), HF_Lam_LRS, nrow = 2, labels = c('B',''), heights = c(1, 1), common.legend = T)
+HF_rep_all
+
+```
+
+## Lifespan
+```{r}
+#Combine Strain and Treatment into one variable for plotting
+thermo_HF_LS <- thermo_HF_LS %>%
+  unite(Str_tr, c('Strain', 'Treatment.ID'), remove = F)
+
+#Make sure it's a factor
+thermo_HF_LS$Str_tr <- as.factor(thermo_HF_LS$Str_tr)
+
+#Set N2 Ev as reference level
+thermo_HF_LS$Str_tr <- relevel(thermo_HF_LS$Str_tr, ref = 'N2_ev')
+
+#FIlter out unnatural deaths (Loss, walling, explosions)
+thermo_HF_LS <- thermo_HF_LS %>%
+  filter(thermo_HF_LS$Cause != 'L' & thermo_HF_LS$Cause !='W' & thermo_HF_LS$Cause != 'E')
+
+#name factor levels of Str_tr
+thermo_HF_LS$Str_tr <- factor(thermo_HF_LS$Str_tr, levels = c("N2_ev", "N2_daf", "SKN-1_ev", "SKN-1_daf"))
+
+#Check what Age is classed as
+class(thermo_HF_LS$Age)
+
+#Change to numeric
+thermo_HF_LS$Age <- as.numeric(thermo_HF_LS$Age)
+
+#Create survival object
+survHF<-survfit(Surv(Age,Event)~Str_tr,data=thermo_HF_LS)
+
+#Create a binary variable for matricides (1 = matricide, 0 = no matricide) to analyse with logistic regression
+thermo_HF_LS$Matricide <- as.numeric(thermo_HF_LS$Cause == 'M')
+
+
+#binomial glmer for matricide occurrence (logistic regression)
+mat_mod <- glmer(Matricide ~ Str_tr + (1|Plate.ID), data = thermo_HF_LS, family = 'binomial')
+summary(mat_mod)
+
+#Create colour palette
+palette <- c('#E64B35FF','#4DBBD5FF', '#00A087FF', '#3C5488FF')
+
+#Survival curve
+THH_LS_plot <-ggsurvplot(survHF, ylab="Survival probability", data = thermo_HF_LS, size= 0.8, font.ylab= 14, font.xlab= 14, legend = c(0.8, 0.9), legend.title = "", title = "Start 25\u00B0C", censor = FALSE, xlab = "Day", xlim=c(0,40), break.time.by = 5, palette = palette, position= position_dodge(0.9), legend.labs=c("N2 ev", "N2 daf-2", "SKN-1 ev", "SKN-1 daf"),font.tickslab = c(12),  font.legend = c(13), font.title = c(14))
+THH_LS_plot
+
+THH_LS_plot <- THH_LS_plot$plot + scale_color_manual(labels = c(  'N2 ev',N2_daf_label,skn_ev_label,skn_daf_label), values = c('#E64B35FF', '#4DBBD5FF','#00A087FF','#3C5488FF')) +theme(plot.title = element_text(face = 'bold'))
+
+THH_LS_plot
+
+??ggsurvplot
+
+#Exclude matricides
+thermo_HF_LSNM <- thermo_HF_LS %>%
+  filter(thermo_HF_LS$Cause != 'M')
+
+
+#Create survival object for matricide censored data
+survHF_NM<-survfit(Surv(Age,Event)~Str_tr,data=thermo_HF_LSNM)
+
+#Create survival curves
+LS_plot_matcen_THH <-ggsurvplot(survHF_NM, ylab="Survival probability", data = thermo_HF_LSNM, size= 0.8, font.ylab= 12, font.xlab= 12, legend = c(0.2, 0.2), legend.title = "", palette = palette, title = "Start 25\u00B0C", censor = FALSE, xlab = "Day", xlim=c(0,40), break.time.by = 5, position= position_dodge(0.9), legend.labs=c("N2 ev", "N2 daf-2", "SKN-1 ev", "SKN-1 daf-1"), font.tickslab = c(12), font.legend = c(12), font.title = c(12))
+LS_plot_matcen_THH
+
+LS_plot_matcen_THH <- LS_plot_matcen_THH$plot + scale_color_manual(labels = c(  'N2 ev',N2_daf_label,skn_ev_label,skn_daf_label), values = c('#E64B35FF', '#4DBBD5FF','#00A087FF','#3C5488FF'))+theme(plot.title = element_text(face = 'bold'))
+
+LS_plot_matcen_THH
+
+#Sometimes NAs are produced creating an additional non-existent factor level - omit NAs first
+thermo_HF_LS <- na.omit(thermo_HF_LS)
+thermo_HF_LSNM <- na.omit(thermo_HF_LSNM)
+
+#Drop non-existent factor level - or cox models get confused
+thermo_HF_LS$Str_tr <- droplevels(thermo_HF_LS$Str_tr)
+levels(thermo_HF_LS$Str_tr)
+thermo_HF_LSNM$Str_tr <- droplevels(thermo_HF_LSNM$Str_tr)
+
+#Mixed effects cox proportional hazards model to test effect of treatment on survival probability
+HF_cox <- coxme(Surv(Age, Event) ~ Strain * Treatment.ID + (1|Plate.ID), data = thermo_HF_LS)
+summary(HF_cox)
+Anova(HF_cox, type = 'III')
+
+#Test model 
+cox.zph(HF_cox)#check with EH analysis
+
+#forest plot
+HF_cox_forest <- forest_coxme(HF_cox, xlab = "Log hazard ratio")
+HF_cox_forest
+
+#add colours and labels
+HF_cox_forest <- HF_cox_forest + scale_color_manual(values = c('#4DBBD5FF','#00A087FF','#3C5488FF')) + scale_y_discrete(labels = c(N2_daf_label,skn_ev_label,skn_daf_label))
+
+HF_cox_forest
+
+#Mixed effects cox proportional hazards model to test effect of treatment on survival prob
+HF_NM_cox <- coxme(Surv(Age, Event) ~ Strain * Treatment.ID + (1|Plate.ID), data = thermo_HF_LSNM)
+summary(HF_NM_cox)
+Anova(HF_NM_cox, type = 'III')
+#test model
+plot(cox.zph(HF_NM_cox))
+cox.zph(HF_NM_cox)#compare to an EH analysis
+
+
+#forest plot
+HF_NM_cox_forest <- forest_coxme(HF_NM_cox, xlab = "Log hazard ratio")
+HF_NM_cox_forest
+
+HF_NM_cox_forest <- HF_NM_cox_forest + scale_color_manual(values = c('#4DBBD5FF','#00A087FF','#3C5488FF')) + scale_y_discrete(labels = c(N2_daf_label,skn_ev_label,skn_daf_label))
+
+HF_NM_cox_forest
+
+```
+
+Combine thermocycle reproduction lifespan plots
+##need to run previous code chunks to combine
+```{r}
+
+#combine reproduction plots
+thermo_rep_all <- ggarrange(CF_rep_all, HF_rep_all, ncol = 2, common.legend = T)
+thermo_rep_all
+
+#(plot = thermo_rep_all, 'thermo_rep_all.png', width = 9, height = 7, bg = 'white')
+
+#combine lifespan plots
+thermo_NM_LS_all <- ggarrange(LS_plot_matcen_THC,CF_NM_cox_forest, LS_plot_matcen_THH,  HF_NM_cox_forest, ncol = 1, nrow = 4, common.legend = T, heights = c(1.75, 1), labels = 'AUTO')
+thermo_NM_LS_all
+
+thermo_NM_LS_all_2 <- ggarrange(LS_plot_matcen_THC,LS_plot_matcen_THH,CF_NM_cox_forest,   HF_NM_cox_forest, ncol = 2, nrow = 2, common.legend = T, heights = c(1.75, 1), labels = 'AUTO')
+thermo_NM_LS_all_2
+
+
+#ggsave(plot = thermo_NM_LS_all_2, 'thermo_NM_LS_all_2.png', height = 7, width = 10, bg = 'white')
+#ggsave(plot = thermo_NM_LS_all, 'thermo_NM_LS_all.png', height = 12, width = 6, bg = 'white')
+```
+
+
+# SKN-1 in 15C
+Lifespan assays in SKN-1 mutants and N2s with daf-2 or ev (control) RNAi treatments in 15C, including a treatment with a single 24-hour cycle of 25C at ~ L2 stage
+##Lifespan
+```{r}
+
+#Include only 15C data
+SKN_15 <- SKN_15_25_LS %>%
+  filter(Temperature != '25' & Temperature != '25F')
+
+#Unite strain and treatment for plotting
+SKN_15 <- SKN_15 %>%
+  unite(Str_tr, 'Strain','Treatment.ID', remove = F)
+
+#Unite strain, treatment and temperature for plotting
+SKN_15 <- SKN_15 %>%
+  unite(Str_tr_temp, 'Str_tr', 'Temperature', remove = F)
+
+#Make sure it's a factor
+SKN_15$Str_tr_temp <- as.factor(SKN_15$Str_tr_temp)
+
+#Set reference level to N2 Ev
+SKN_15$Str_tr_temp <- relevel(SKN_15$Str_tr_temp, ref = 'N2_ev_15')
+
+#Name levels
+SKN_15$Str_tr_temp <- factor(SKN_15$Str_tr_temp, levels = c('N2_ev_15','N2_daf_15','SKN_ev_15','SKN_daf_15','SKN_daf_15F'))
+
+#Create survival object
+surv_SKN15<-survfit(Surv(Age,Event)~Str_tr + Temperature,data=SKN_15)
+
+#Create survival curves
+SKN_15_plot <-ggsurvplot(surv_SKN15, ylab="Survival probability", data = SKN_15, size= 0.8, font.ylab= 12, font.xlab= 12, legend = c(0.2, 0.2), legend.title = "", title = "15°C",palette = c('#4DBBD5FF','#E64B35FF' ,'#3C5488FF','#F39B7FFF','#00A087FF'), censor = FALSE, xlab = "Day", xlim=c(0,40), break.time.by = 5, position= position_dodge(0.9), font.tickslab = c(12), font.legend = c(12), font.title = c(12))
+
+SKN_15_plot
+
+SKN_15_plot <- SKN_15_plot$plot + scale_color_manual(labels = c(N2_daf_label,  'N2 ev',skn_daf_label,skn_cycle_label,skn_ev_label), values = c('#4DBBD5FF','#E64B35FF' ,'#3C5488FF','#F39B7FFF','#00A087FF'))+theme(plot.title = element_text(face = 'bold'))
+
+SKN_15_plot
+
+#Exclude matricides
+SKN_15_NM <- SKN_15 %>%
+  filter(Cause != 'M')
+
+
+#Create survival objet
+surv_SKN15_NM<-survfit(Surv(Age,Event)~Str_tr + Temperature,data=SKN_15_NM)
+
+#Create survival curves
+SKN_15_NM_plot <-ggsurvplot(surv_SKN15_NM, ylab="Survival probability", data = SKN_15_NM, size= 0.8, font.ylab= 12, font.xlab= 12, legend = c(0.2, 0.2), legend.title = "", title = "15°C", censor = FALSE, xlab = "Day", xlim=c(0,40), break.time.by = 5, position= position_dodge(0.9), font.tickslab = c(12), palette = c('#4DBBD5FF','#E64B35FF', '#3C5488FF','#F39B7FFF','#00A087FF'), font.legend = c(12),font.title = c(12))
+
+SKN_15_NM_plot
+
+SKN_15_NM_plot <- SKN_15_NM_plot$plot + scale_color_manual(labels = c(N2_daf_label,  'N2 ev',skn_daf_label,skn_cycle_label,skn_ev_label), values = c('#4DBBD5FF','#E64B35FF' ,'#3C5488FF','#F39B7FFF','#00A087FF'))+theme(plot.title = element_text(face = 'bold'))
+
+SKN_15_NM_plot
+#Analyse two strains individually due to additionally treatment of thermocycling during development in SKN-1 only
+#FIlter only SKNs 
+SKN_only_15 <- SKN_15 %>%
+  filter(Strain == 'SKN')
+
+str(SKN_only_15)
+
+#Check levels of Strain
+SKN_only_15$Strain <- as.factor(SKN_only_15$Strain)
+levels(SKN_only_15$Strain)
+
+#Check levels of temperature
+levels(SKN_only_15$Temperature)
+
+#Need to drop levels - still thinks it has 15C treatments 
+SKN_only_15$Temperature <- droplevels(SKN_only_15$Temperature)
+levels(SKN_only_15$Temperature)
+
+#Check levels of Treatment
+SKN_only_15$Treatment.ID <- as.factor(SKN_only_15$Treatment.ID)
+levels(SKN_only_15$Treatment.ID)
+SKN_only_15$Treatment.ID <- droplevels(SKN_only_15$Treatment.ID)
+
+#Combine Treatment and temperature because of imbalance
+SKN_only_15 <- SKN_only_15 %>%
+  unite(Tr_temp, 'Treatment.ID','Temperature', remove = F)
+
+#set ev as reference level
+SKN_only_15$Tr_temp <- as.factor(SKN_only_15$Tr_temp)
+SKN_only_15$Tr_temp <- relevel(SKN_only_15$Tr_temp, ref = 'ev_15')
+
+#Coxme model with combined effect of treatment and temperature to account for developmental thermocycle treatment
+cox_SKN_15_only <- coxme(Surv(Age, Event) ~ Tr_temp + (1|Plate.ID), data = SKN_only_15)
+summary(cox_SKN_15_only)
+Anova(cox_SKN_15_only, type = 'II')
+
+#test model
+cox.zph(cox_SKN_15_only)# OK! p = 0.18
+
+#Matricides censored
+SKN_only_15_NM <- SKN_only_15 %>%
+  filter(Cause !='M')
+
+#Coxme model with combined effect of treatment and temperature to account for developmental thermocycle treatment with matricides censored
+cox_SKN_15_only_NM <- coxme(Surv(Age, Event) ~ Tr_temp + (1|Plate.ID), data = SKN_only_15_NM)
+summary(cox_SKN_15_only_NM)
+Anova(cox_SKN_15_only_NM, type = 'II')
+#test model
+cox.zph(cox_SKN_15_only_NM)# global p = 0.41, OK!
+
+
+#Filter out N2s
+N2_only_15 <- SKN_15 %>%
+  filter(Strain == 'N2')
+
+#Set ev as reference level
+N2_only_15$Treatment.ID <- as.factor(N2_only_15$Treatment.ID)
+N2_only_15$Treatment.ID <- relevel(N2_only_15$Treatment.ID, ref = 'ev')
+
+#Coxme model with treatment as factor
+cox_N2_15_only <- coxme(Surv(Age, Event) ~ Treatment.ID + (1|Plate.ID), data = N2_only_15)
+summary(cox_N2_15_only)
+Anova(cox_N2_15_only, type = 'II')
+
+#test model
+cox.zph(cox_N2_15_only)#OK p = 0.79
+
+#Censor matricides
+N2_only_15_NM <- N2_only_15 %>%
+  filter(Cause !='M')
+
+#coxme model with treatment as factor with matricides censored
+cox_N2_15_only_NM <- coxme(Surv(Age, Event) ~ Treatment.ID + (1|Plate.ID), data = N2_only_15_NM)
+summary(cox_N2_15_only_NM)
+Anova(cox_N2_15_only_NM, type = 'II')
+#test model
+cox.zph(cox_N2_15_only_NM)#p = 0.87 OK
+
+
+
+#Forest plots with matricides
+SKN_15_forest <- forest_cox_strain(
+  cox_SKN_15_only,
+  treatment = "Tr_temp",
+  ref_treatment = "ev_15",
+  xlab = "Log Hazard Ratio (vs ev)",
+  treatment_labels = c("daf_15", "daf_15F"),
+  vline_color = "#00A087FF"  # ordered display
+)
+
+SKN_15_forest
+
+SKN_15_forest <- SKN_15_forest +
+  scale_color_manual(values = c('#3C5488FF','#F39B7FFF'))+
+  scale_y_discrete(labels = c(daf_label, daf_cyc_forest_lab))+
+  theme(legend.position = 'none')+
+  theme(plot.margin = margin(0, 0.5, 0, 0.5, unit = "cm"))+
+  labs(title = skn_lab)
+
+SKN_15_forest
+
+
+N2_15_forest <- forest_cox_strain(
+  cox_N2_15_only,
+  treatment = "Treatment.ID",
+  ref_treatment = "ev",
+  xlab = "Log Hazard Ratio (vs ev)",
+  treatment_labels = c("daf"),
+  vline_color = "#E64B35FF"  # ordered display
+)
+
+
+N2_15_forest
+
+N2_15_forest <- N2_15_forest +
+  scale_color_manual(values = c('#4DBBD5FF'))+
+  scale_y_discrete(labels = c(daf_label))+
+  theme(legend.position = 'none')+
+  theme(plot.margin = margin(0, 0.5, 0, 0.5, unit = "cm"))+
+  labs(title = 'N2')
+
+N2_15_forest
+
+
+#Forest plots without matricides
+SKN_15NM_forest <- forest_cox_strain(
+  cox_SKN_15_only_NM,
+  treatment = "Tr_temp",
+  ref_treatment = "ev_15",
+  xlab = "Log Hazard Ratio (vs ev)",
+  treatment_labels = c("daf_15", "daf_15F"),
+  vline_color = "#00A087FF"  # ordered display
+)
+
+SKN_15NM_forest
+
+SKN_15NM_forest <- SKN_15NM_forest +
+  scale_color_manual(values = c('#3C5488FF','#F39B7FFF'))+
+  scale_y_discrete(labels = c(daf_label, daf_cyc_forest_lab))+
+  theme(legend.position = 'none')+
+  theme(plot.margin = margin(0, 0.5, 0, 0.5, unit = "cm"))+
+  labs(title = skn_lab)
+
+SKN_15NM_forest
+
+
+N2_15NM_forest <- forest_cox_strain(
+  cox_N2_15_only_NM,
+  treatment = "Treatment.ID",
+  ref_treatment = "ev",
+  xlab = "Log Hazard Ratio (vs ev)",
+  treatment_labels = c("daf"),
+  vline_color = "#E64B35FF"  # ordered display
+)
+
+
+N2_15NM_forest
+
+N2_15NM_forest <- N2_15NM_forest +
+  scale_color_manual(values = c('#4DBBD5FF'))+
+  scale_y_discrete(labels = c(daf_label))+
+  theme(legend.position = 'none')+
+  theme(plot.margin = margin(0, 0.5, 0, 0.5, unit = "cm"))+
+  labs(title = 'N2')
+
+N2_15NM_forest
+
+
+```
+
+
+# SKN-1 in 25C
+Lifespan assays in SKN-1 mutants and N2s with daf-2 or ev (control) RNAi treatments in 25C, including a treatment with a single 24-hour cycle of 15C at ~ L2 stage
+## Lifespan
+```{r}
+
+#Temperature as a factor
+SKN_15_25_LS$Temperature <- as.factor(SKN_15_25_LS$Temperature)
+
+#Get only 25C data
+SKN_25 <- SKN_15_25_LS %>%
+  filter(Temperature != '15' & Temperature != '15F')
+
+#Combine Strain and treatment for plotting
+SKN_25 <- SKN_25 %>%
+  unite(Str_tr, 'Strain','Treatment.ID', remove = F)
+
+#Also combine temperature with strain and treatment
+SKN_25 <- SKN_25 %>%
+  unite(Str_tr_temp, 'Str_tr', 'Temperature', remove = F)
+
+#Rename factor levels
+SKN_25$Str_tr_temp <- factor(SKN_25$Str_tr_temp, levels = c('N2_ev_25','N2_daf_25','SKN_ev_25','SKN_daf_25','SKN_daf_25F'))
+
+#Ensure it's a factor
+SKN_25$Str_tr_temp <- as.factor(SKN_25$Str_tr_temp)
+
+#Set ev N2 with 25C only as reference level
+SKN_25$Str_tr_temp <- relevel(SKN_25$Str_tr_temp, ref = 'N2_ev_25')
+
+#Create survival object for plot
+surv_SKN25<-survfit(Surv(Age,Event)~Str_tr + Temperature,data=SKN_25)
+
+#Create survival curve
+SKN_25_plot <-ggsurvplot(surv_SKN25, ylab="Survival probability", data = SKN_25, size= 0.8, font.ylab= 12, font.xlab= 12, legend = c(0.8, 0.8), legend.title = "", title = "25°C", palette = c('#4DBBD5FF','#E64B35FF' ,'#3C5488FF','#F39B7FFF','#00A087FF'),censor = FALSE, xlab = "Day", xlim=c(0,30), break.time.by = 5, position= position_dodge(0.9), font.tickslab = c(12), font.legend = c(12),font.title = c(12))
+
+SKN_25_plot
+
+SKN_25_plot <- SKN_25_plot$plot + scale_color_manual(labels = c(N2_daf_label,  'N2: ev',skn_daf_label,skn_cycle_label,skn_ev_label), values = c('#4DBBD5FF','#E64B35FF' ,'#3C5488FF','#F39B7FFF','#00A087FF'))+theme(plot.title = element_text(face = 'bold'))
+
+SKN_25_plot
+
+#Exclude matricides
+SKN_25_NM <- SKN_25 %>%
+  filter(Cause != 'M')
+
+#Create survival object
+surv_SKN25_NM<-survfit(Surv(Age,Event)~Str_tr + Temperature,data=SKN_25_NM)
+
+#Create survival curve
+SKN_25_NM_plot <-ggsurvplot(surv_SKN25_NM, ylab="Survival probability", data = SKN_25_NM, size= 0.8, font.ylab= 12, font.xlab= 12, legend = c(0.8, 0.8), legend.title = "", palette = c('#4DBBD5FF','#E64B35FF' ,'#3C5488FF','#F39B7FFF','#00A087FF'), title = "25°C",  censor = FALSE, xlab = "Day", xlim=c(0,30), break.time.by = 5, position= position_dodge(0.9), font.tickslab = c(12), font.legend = c(12),font.title = c(12)) 
+#legend.labs = c('N2 daf-2', 'N2 ev','SKN-1 daf-2','SKN-1 daf-2 + cycle','SKN-1 ev'))
+SKN_25_NM_plot
+SKN_25_NM_plot <- SKN_25_NM_plot$plot + scale_color_manual(labels = c(N2_daf_label,  'N2: ev',skn_daf_label,skn_cycle_label,skn_ev_label), values = c('#4DBBD5FF','#E64B35FF' ,'#3C5488FF','#F39B7FFF','#00A087FF'))+theme(plot.title = element_text(face = 'bold'))
+
+SKN_25_NM_plot
+
+
+#Make sure Str-tr_temp is a factor
+SKN_25_NM$Str_tr_temp <- as.factor(SKN_25_NM$Str_tr_temp)
+
+#Reset baseline to ev N2 in 25 only
+SKN_25_NM$Str_tr_temp <- relevel(SKN_25_NM$Str_tr_temp, ref = 'N2_ev_25')
+
+
+#Analyse within strains becaues of additional treatment only in SKN-1
+
+#FIlter only SKNs 
+SKN_only_25 <- SKN_25 %>%
+  filter(Strain == 'SKN')
+
+str(SKN_only_25)
+
+#Check levels of Strain
+SKN_only_25$Strain <- as.factor(SKN_only_25$Strain)
+levels(SKN_only_25$Strain)
+
+#Check levels of temperature
+levels(SKN_only_25$Temperature)
+
+#Need to drop levels - still thinks it has 15C treatments 
+SKN_only_25$Temperature <- droplevels(SKN_only_25$Temperature)
+levels(SKN_only_25$Temperature)
+
+#Check levels of Treatment
+SKN_only_25$Treatment.ID <- as.factor(SKN_only_25$Treatment.ID)
+levels(SKN_only_25$Treatment.ID)
+SKN_only_25$Treatment.ID <- droplevels(SKN_only_25$Treatment.ID)
+
+#Combine Treatment and temperature because of imbalance
+SKN_only_25 <- SKN_only_25 %>%
+  unite(Tr_temp, 'Treatment.ID','Temperature', remove = F)
+
+#set ev as reference level
+SKN_only_25$Tr_temp <- as.factor(SKN_only_25$Tr_temp)
+SKN_only_25$Tr_temp <- relevel(SKN_only_25$Tr_temp, ref = 'ev_25')
+
+#Coxme model with combined effect of treatment and temperature to account for developmental thermocycle treatment
+cox_SKN_25_only <- coxme(Surv(Age, Event) ~ Tr_temp + (1|Plate.ID), data = SKN_only_25)
+summary(cox_SKN_25_only)
+Anova(cox_SKN_25_only, type = 'II')
+#test model
+cox.zph(cox_SKN_25_only)# global p = 0.004 - check with EH analysis
+
+#Matricides censored
+SKN_only_25_NM <- SKN_only_25 %>%
+  filter(Cause !='M')
+
+#Coxme model with combined effect of treatment and temperature to account for developmental thermocycle treatment with matricides censored
+cox_SKN_25_only_NM <- coxme(Surv(Age, Event) ~ Tr_temp + (1|Plate.ID), data = SKN_only_25_NM)
+summary(cox_SKN_25_only_NM)
+Anova(cox_SKN_25_only_NM, type = 'II')
+
+#test model
+cox.zph(cox_SKN_25_only_NM)# global p = 0.054 OK
+
+
+#Filter out N2s
+N2_only_25 <- SKN_25 %>%
+  filter(Strain == 'N2')
+
+#Set ev as reference level
+N2_only_25$Treatment.ID <- as.factor(N2_only_25$Treatment.ID)
+N2_only_25$Treatment.ID <- relevel(N2_only_25$Treatment.ID, ref = 'ev')
+
+#Coxme model with treatment as factor
+cox_N2_only <- coxme(Surv(Age, Event) ~ Treatment.ID + (1|Plate.ID), data = N2_only_25)
+summary(cox_N2_only)
+Anova(cox_N2_only, type = 'II')
+
+#test model
+cox.zph(cox_N2_only)#OK p>0.05
+
+#Censor matricides
+N2_only_25_NM <- N2_only_25 %>%
+  filter(Cause !='M')
+
+#coxme model with treatment as factor with matricides censored
+cox_N2_only_NM <- coxme(Surv(Age, Event) ~ Treatment.ID + (1|Plate.ID), data = N2_only_25_NM)
+summary(cox_N2_only_NM)
+Anova(cox_N2_only_NM, type = 'II')
+
+
+#Forest plots with matricides
+SKN_25_forest <- forest_cox_strain(
+  cox_SKN_25_only,
+  treatment = "Tr_temp",
+  ref_treatment = "ev_25",
+  xlab = "Log Hazard Ratio",
+  treatment_labels = c("daf_25", "daf_25F"),
+  vline_color = "#00A087FF"  # ordered display
+)
+
+SKN_25_forest
+
+SKN_25_forest <- SKN_25_forest +
+  scale_color_manual(values = c('#3C5488FF','#F39B7FFF'))+
+  scale_y_discrete(labels = c(daf_label, daf_cyc_forest_lab))+
+  theme(legend.position = 'none')+
+  theme(plot.margin = margin(0, 0.5, 0, 0.5, unit = "cm"))+
+  labs(title = skn_lab)
+
+SKN_25_forest
+
+
+N2_25_forest <- forest_cox_strain(
+  cox_N2_only,
+  treatment = "Treatment.ID",
+  ref_treatment = "ev",
+  xlab = "Log Hazard Ratio",
+  treatment_labels = c("daf"),
+  vline_color = "#E64B35FF"  # ordered display
+)
+
+
+N2_25_forest
+
+N2_25_forest <- N2_25_forest +
+  scale_color_manual(values = c('#4DBBD5FF'))+
+  scale_y_discrete(labels = c(daf_label))+
+  theme(legend.position = 'none')+
+  theme(plot.margin = margin(0, 0.5, 0, 0.5, unit = "cm"))+
+  labs(title = 'N2')
+
+N2_25_forest
+
+
+#Forest plots without matricides
+SKN_25NM_forest <- forest_cox_strain(
+  cox_SKN_25_only_NM,
+  treatment = "Tr_temp",
+  ref_treatment = "ev_25",
+  xlab = "Log Hazard Ratio (vs ev)",
+  treatment_labels = c("daf_25", "daf_25F"),
+  vline_color = "#00A087FF"  # ordered display
+)
+
+SKN_25NM_forest
+
+SKN_25NM_forest <- SKN_25NM_forest +
+  scale_color_manual(values = c('#3C5488FF','#F39B7FFF'))+
+  scale_y_discrete(labels = c(daf_label, daf_cyc_forest_lab))+
+  theme(legend.position = 'none')+
+  theme(plot.margin = margin(0, 0.5, 0, 0.5, unit = "cm"))+
+  labs(title = skn_lab)
+
+SKN_25NM_forest
+
+
+N2_25NM_forest <- forest_cox_strain(
+  cox_N2_only_NM,
+  treatment = "Treatment.ID",
+  ref_treatment = "ev",
+  xlab = "Log Hazard Ratio (vs ev)",
+  treatment_labels = c("daf"),
+  vline_color = "#E64B35FF"  # ordered display
+)
+
+
+N2_25NM_forest <- N2_25NM_forest +
+  scale_color_manual(values = c('#4DBBD5FF'))+
+  scale_y_discrete(labels = c(daf_label))+
+  theme(legend.position = 'none')+
+  theme(plot.margin = margin(0, 0.5, 0, 0.5, unit = "cm"))+
+  labs(title = 'N2')
+
+N2_25NM_forest
+
+#combine 15/25C forest plots with matricides
+SKN_N2_15_forest <- ggarrange(N2_15_forest,
+                              SKN_15_forest,
+                              ncol = 2, labels = c('B','C'))
+SKN_N2_15_forest
+
+
+SKN_N2_25_forest <- ggarrange(N2_25_forest,
+                              SKN_25_forest, 
+                              ncol = 2, labels = c('E','F'))
+SKN_N2_25_forest
+
+#combine 15/25C forest plots without matricides
+SKN_N2_15NM_forest <- ggarrange(N2_15NM_forest,
+                              SKN_15NM_forest,
+                              ncol = 2, labels = c('B','C'))
+SKN_N2_15NM_forest <- SKN_N2_15NM_forest + theme(plot.margin = unit(c(0,0,1,0), 'cm'))
+SKN_N2_15NM_forest
+
+SKN_N2_25NM_forest <- ggarrange(N2_25NM_forest,
+                              SKN_25NM_forest, 
+                              ncol = 2, labels = c('E','F'))
+SKN_N2_25NM_forest <- SKN_N2_25NM_forest + theme(plot.margin = unit(c(0,0,1,0), 'cm'))
+SKN_N2_25NM_forest
+
+
+```
+
+
+Combine constant temperature lifespan plots
+##need to run previous 2 code chunks to combine all plots
+```{r}
+SKN_15_25_all <- ggarrange(SKN_15_plot + 
+                             theme(plot.title = element_text(face = 'bold', size = 15)),
+                           SKN_N2_15_forest,
+                           SKN_25_plot +
+                             theme(plot.title = element_text(face = 'bold', size = 15)),
+                           SKN_N2_25_forest, 
+                           nrow = 4, heights = c(1.75, 1, 1.75, 1), 
+                           common.legend = T, labels = c('A','','D',''))
+
+SKN_15_25_all
+
+ggsave("SKN_15_25_all.png", plot = SKN_15_25_all, bg = 'white',width = 7, height = 11, dpi = 300)
+
+
+SKN_15_25_NM_all <- ggarrange(SKN_15_NM_plot + 
+                             theme(plot.title = element_text(face = 'bold', size = 15)),
+                           SKN_N2_15NM_forest,
+                           SKN_25_NM_plot +
+                             theme(plot.title = element_text(face = 'bold', size = 15)),
+                           SKN_N2_25NM_forest, 
+                           nrow = 4, heights = c(1.65, 1, 1.65, 1), 
+                           common.legend = T, labels = c('A','','D',''))
+
+SKN_15_25_NM_all
+
+ggsave("SKN_15_25_NM_all.png", plot = SKN_15_25_NM_all, bg = 'white',width = 7, height = 11, dpi = 300)
+
+
+```

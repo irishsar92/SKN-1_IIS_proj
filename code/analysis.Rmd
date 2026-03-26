@@ -1,0 +1,1153 @@
+---
+title: "analysis"
+author: "Sara Irish"
+date: "`r Sys.Date()`"
+output: html_document
+---
+#Setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+suppressPackageStartupMessages({
+  library(glmmTMB)
+  library(car)
+  library(popbio)
+  library(ggplot2)
+  library(ggbeeswarm)
+  library(shades)
+  library(RColorBrewer)
+  library(DHARMa)
+  library(Rmisc)
+  library(dabestr)
+  library(magrittr)
+  library(tidyr)
+  library(dplyr)
+  library(ggeffects)
+  library(lme4)
+  library(optimx)
+  library(nloptr)
+  library(dfoptim)
+  library(data.table)
+  library(pscl)
+  library(ggThemeAssist)
+  library(DHARMa)
+  library(emmeans)
+  library(ggpubr)
+  library(patchwork)
+  library(lubridate)
+  library(survival)
+  library(coxme) #for cox model
+  library(ggplot2)
+  library(purrr) #for forestplot
+  library(ggpubr) #for forestplot
+  library(survminer) #for forestplot
+  library(AICcmodavg)
+  library(permutes)
+  library(performance)
+  library(fields)
+  library(grid)
+  library(ggplotify)
+  library(cowplot)
+  library(eha)
+  library(multcomp)
+  library(usethis)
+  library(forcats)
+})
+
+getwd()
+setwd("C:/Users/irish/OneDrive/Documents/R/SKN-1_IIS/SKN-1_IIS")
+#24-hour 15 to 25C thermocycling experiments, HF = 25C first, CF = 15C first, LS = lifespan, rep = reproduction
+thermo_HF_rep <- read.csv('data/Thermo_H_rep.csv')
+thermo_HF_LS <- read.csv('data/Thermo_H_LS.csv')
+thermo_CF_rep <- read.csv('data/Thermo_C_rep.csv')
+thermo_CF_LS <- read.csv('data/Thermo_C_LS.csv') 
+
+#SKN-1 mutants with and without daf-2 RNAi KD in 20C - LS = lifespan, rep = reproduction
+SKN_20C_rep <- read.csv('data/SKN1_20C_repro.csv')
+SKN_20C_LS <- read.csv('data/SKN1_20C_LS.csv')
+
+#Lifespan experiment SKN-1 mutants with and without daf-2 RNAi KD in 15 and 25C, with additional treatment of daf-2 RNAi KD SKN-1 mutants starting with 24 hrs of opposite temperature to test effects of temperature on early development of SKN-1 mutants
+SKN_15_25_LS <- read.csv('data/SKN_N2_LS_15_25.csv')
+
+```
+
+
+
+#SKN-1 in 20C
+Reproduction and lifespan assays in SKN-1 mutants with daf-2 or ev (control) RNAi treatments in 20C
+
+##Reproduction
+```{r}
+
+#put data into long form
+skn_long <- SKN_20C_rep %>% 
+  pivot_longer(
+    cols = c(`D1`, `D2`, `D3`, `D4`, `D5`), 
+    names_to = "Day",
+    values_to = "value")
+
+summarySE(thermo_HF_LS, groupvars = c('Strain','Treatment.ID'), measurevar = 'Age')
+
+
+#select only columns needed
+skn_long <- skn_long %>%
+  dplyr::select(c('ID','Treatment','Day','value'))
+
+#rename treatments
+skn_long$Treatment <- as.factor(skn_long$Treatment)
+levels(skn_long$Treatment) <- list('ev' = 'ev', 'daf-2' = 'daf')
+
+#Get Day into a numeric form
+#Change day to a numeric variable for analysis
+skn_long$Day <- as.factor(skn_long$Day)
+levels(skn_long$Day) <- list('1' = 'D1', '2' = 'D2', '3' = 'D3', '4' = 'D4', '5' = 'D5')
+skn_long$Day <- as.numeric(skn_long$Day)
+
+#set ev as reference level
+skn_long$Treatment <- as.factor(skn_long$Treatment)
+skn_long$Treatment <- relevel(skn_long$Treatment, ref = 'ev')
+
+#Age-specific reproduction aanalysis with negative binomial GLMM
+m1_SKN <- glmmTMB(value ~ Treatment * Day + (1|ID), family = nbinom2(), data = skn_long)
+summary(m1_SKN)
+
+#model diagnostics
+sim_SKN1 <- simulateResiduals(m1_SKN, plot = T)
+testDispersion(sim_SKN1)#underdispersed
+testZeroInflation(sim_SKN1)#zero-inflated
+
+#Try adding zero inflation formula
+m2_SKN <- glmmTMB(value ~ Treatment*Day + (1|ID), ziformula = ~Day, family = nbinom2(), data = skn_long)
+summary(m2_SKN)#won't converge, try removing interaction (appears nonsig in previous model)
+
+#Remove interaction
+m3_SKN <- glmmTMB(value ~ Treatment + Day + (1|ID), family = nbinom2(), ziformula = ~ Day, data = skn_long)
+summary(m3_SKN)
+
+#diagnostic
+sim_SKN3 <- simulateResiduals(m3_SKN, plot = T)
+testZeroInflation(sim_SKN3)
+testDispersion(sim_SKN3)
+
+### Try a poisson model
+m4_SKN <- glmmTMB(value ~ Treatment * poly(Day,2) + (1|ID), family = poisson(), data = skn_long)
+AIC(m1_SKN, m4_SKN)#poisson has MUCH higher AIC
+summary(m4_SKN)
+sim_m4 <- simulateResiduals(m4_SKN, plot = T)
+testDispersion(sim_m4)#dispersion much better
+testZeroInflation(sim_m4)#major ZI
+#compare other models
+AIC(m1_SKN, m2_SKN, m3_SKN, m4_SKN) #lowest AIC - but no dispersion issues
+
+# **** Final model
+### Try a poisson model with ziformula
+m5_SKN <- glmmTMB(value ~ Treatment * poly(Day,2) + (1|ID), ziformula = ~Day, family = poisson(), data = skn_long)
+summary(m5_SKN)
+sim_m5 <- simulateResiduals(m5_SKN, plot = T)
+testZeroInflation(sim_m5)
+testDispersion(sim_m5)
+Anova(m5_SKN, type = 'III')
+AIC(m4_SKN, m5_SKN)
+
+#to get anova results for full model
+m5_SKN_anova <- glmmTMB(value ~ Treatment * I(Day^2)+Treatment*Day + (1|ID), ziformula = ~Day, family = poisson(), data = skn_long)
+Anova(m5_SKN, type = 'III')
+
+
+##############
+#### LRS
+##############
+
+#sum up total number of offspring produced over experiment per individual
+totalrep_SKN<-na.omit(as.data.frame.table(tapply(skn_long$value,list(skn_long$Treatment, skn_long$ID),sum)))
+
+#rename columns
+names(totalrep_SKN)<-c("Treatment", "Replicate", "Totrep")#
+
+#Look at distribution
+  hist(totalrep_SKN$Totrep)#pretty skewed - but try LM
+
+#Try running basic linear model
+SKN_LRS_m1 <- lm(value ~ Treatment, data = skn_long)
+summary(SKN_LRS_m1)
+SKN_LRS_sim1 <- simulateResiduals(SKN_LRS_m1, plot = T)
+
+#Try a Gamma GLM
+SKN_LRS_m2 <- glm(Totrep ~ Treatment, data = totalrep_SKN, family = Gamma(link = 'log'))
+summary(SKN_LRS_m2)
+SKN_LRS_sim2 <- simulateResiduals(SKN_LRS_m2, plot = T)
+Anova(SKN_LRS_m2, type = 'II')
+#Try link = inverse
+SKN_LRS_m3 <- glm(Totrep ~ Treatment, data = totalrep_SKN, family = Gamma(link = 'inverse'))
+summary(SKN_LRS_m3)
+SKN_LRS_sim3 <- simulateResiduals(SKN_LRS_m3, plot = T)
+Anova(SKN_LRS_m3, type = 'II')
+
+totalrep_SKN$Treatment <- as.factor(totalrep_SKN$Treatment)
+
+###########
+#lambda#
+##########
+
+#### Lambda
+#start fresh
+skn_long <- SKN_20C_rep %>% 
+  pivot_longer(
+    cols = c(`D1`, `D2`, `D3`, `D4`, `D5`), 
+    names_to = "Day",
+    values_to = "value")
+
+str(skn_long)
+#keep only columns needed
+skn_long <- skn_long %>%
+  dplyr::select(c('ID', 'Strain','Treatment','Day','value'))
+str(skn_long)
+
+
+#spread data back out
+skn_wide <- spread(skn_long, Day, value)
+
+
+skn_wide <- na.omit(skn_wide)
+
+#calculate Lambda for each individual
+L <- matrix(nrow = nrow(skn_wide), ncol = 4)
+
+for (i in 1:nrow(skn_wide)){
+  Les <- matrix(0, ncol = 7, nrow = 7)
+  diag(Les[-1,]) <- rep(1, 6) # add the 1s for survival probability diagonally
+  Fert <- c(0,0, as.numeric(as.vector(skn_wide[i,][4:8]))) #the columns in data that has the reproductive counts
+  Fert[is.na(Fert)] <- 0 #makes all NAs into 0s
+  Les[1,] <- c(Fert)
+  class(Les) <- "leslie.matrix"
+  Lambda <- popbio::eigen.analysis(Les)$lambda1
+  L[i, 1:4] <- c(paste0(skn_wide$ID[i]), paste0(skn_wide$Strain[i]), paste0(skn_wide$Treatment[i]), Lambda)
+  
+}
+
+#rename columns
+colnames(L)<-c("ID", "Strain", "Treatment", "Lambda")
+
+#make L a data frame
+skn_lam<-as.data.frame(L)
+
+#make sure it's numeric
+skn_lam$Lambda<-as.numeric(as.character(skn_lam$Lambda))
+skn_lam$Treatment <- as.factor(skn_lam$Treatment)
+
+skn_lam$Treatment <- revalue(skn_lam$Treatment, c('ev' = 'control', 'daf' = 'daf-2'))
+skn_lam$Treatment <- relevel(skn_lam$Treatment, ref = 'control')
+
+#analysis 
+skn_lam_mod <- lm(Lambda ~ Treatment, data = skn_lam)
+summary(skn_lam_mod)
+Anova(skn_lam_mod, type = 'II')
+
+
+#get means
+skn_mean_lam <- summarySE(data = skn_lam, measurevar = 'Lambda', groupvars = c('Treatment'))
+skn_mean_lam
+
+
+
+```
+
+##Lifespan
+```{r}
+
+#Get rid of NAs
+SKN_20C_LS <- na.omit(SKN_20C_LS)
+
+#Rename daf to daf-2
+SKN_20C_LS$Treatment.ID <- revalue(SKN_20C_LS$Treatment.ID, c('ev' = 'ev', 'daf' = 'daf-2'))
+
+#Make sure Treatment is a factor
+SKN_20C_LS$Treatment.ID <- as.factor(SKN_20C_LS$Treatment.ID)
+
+#Make ev the baseline level
+SKN_20C_LS$Treatment.ID <- relevel(SKN_20C_LS$Treatment.ID, ref = 'ev')
+
+#Check factor levels of treatment
+levels(SKN_20C_LS$Treatment.ID)
+
+#Get rid of empty levels
+SKN_20C_LS$Treatment.ID <- droplevels(SKN_20C_LS$Treatment.ID)
+
+#Plate.ID as a factor not a numerical
+SKN_20C_LS$Plate.ID <- as.factor(SKN_20C_LS$Plate.ID)
+
+#Mixed effects cox model for a effect of daf-2 on SKN-1 mutant lifespan
+cox_SKN_20C <- coxme(Surv(Age, Event) ~ Treatment.ID + (1|Plate.ID), data = SKN_20C_LS)
+summary(cox_SKN_20C)
+Anova(cox_SKN_20C, type = 'II')
+
+#test model
+cox.zph(cox_SKN_20C)#OK
+
+#Exclude matricides
+SKN_20C_LS_NM <- SKN_20C_LS %>%
+  filter(Cause != 'M')
+
+#Cox mixed effects model
+cox_SKN_20C_NM <- coxme(Surv(Age, Event) ~ Treatment.ID + (1|Plate.ID), data = SKN_20C_LS_NM)
+summary(cox_SKN_20C_NM)
+Anova(cox_SKN_20C_NM, type = 'II')
+#Test model
+cox.zph(cox_SKN_20C_NM)#OK
+
+```
+
+
+#15C first Thermocycling
+
+Reproduction and lifespan assays following 24 hour thermo-cycling between 15 and 25C with 15C as starting temperature across four treatments: SKN-1 mutant + daf-2 RNAi, SKN-1 mutant + ev (control), N2 + daf-2 RNAi, N2 + ev
+
+## Reproduction 
+```{r}
+
+#Dataframe into long form
+thermo_c_long <- thermo_CF_rep %>% 
+  pivot_longer(
+    cols = c(`D1`,`D2`, `D3`, `D4`, `D5`,`D6`, `D7`,`D8`,`D9`), 
+    names_to = "Day",
+    values_to = "value")
+
+
+#Remove unneeded columns
+thermo_c_long <- thermo_c_long %>%
+  dplyr::select(c('ID','Strain', 'Treatment','Day','value'))
+
+#Remove NAs
+thermo_c_long <- na.omit(thermo_c_long)
+
+#Combine strain and treatment into one variable for plotting
+thermo_c_long <- thermo_c_long %>%
+  unite(Str_tr, c('Strain', 'Treatment'), remove = F)
+
+#Set levels of StrainxTreatment
+thermo_c_long$Str_tr <- factor(thermo_c_long$Str_tr, levels = c("N2_ev", "N2_daf", "SKN-1_ev", "SKN-1_daf"))
+
+#change names of Str_tr
+levels(thermo_c_long$Str_tr) <- list('N2 ev' = 'N2_ev', 'N2 daf-2' = 'N2_daf', 'SKN-1 ev' = 'SKN-1_ev', 'SKN-1 daf-2' = 'SKN-1_daf')
+
+#Make sure Day is a factor
+thermo_c_long$Day <- as.factor(thermo_c_long$Day)
+
+#Change day to a numeric variable for analysis
+levels(thermo_c_long$Day) <- list('1' = 'D1', '2' = 'D2', '3' = 'D3', '4' = 'D4', '5' = 'D5', '6' = 'D6', '7' = 'D7', '8' = 'D8', '9' = 'D9')
+thermo_c_long$Day <- as.numeric(thermo_c_long$Day)
+
+
+#Set ev as reference treatment level
+thermo_c_long$Treatment <- as.factor(thermo_c_long$Treatment)
+thermo_c_long$Treatment <- relevel(thermo_c_long$Treatment, ref = 'ev')
+
+#Analyse age-specific repro - use glmmTMB negative binomial due to high level of zeroes
+CF_m1 <- glmmTMB(value ~ Strain *Treatment*Day + (1|ID), family = nbinom1, data = thermo_c_long)
+
+#Simulate residuals with DHARMa package to test for dispersion and zero-inflation issues
+CF_sim1 <- simulateResiduals(CF_m1, plot = T)
+testDispersion(CF_sim1)#underdispersed
+testZeroInflation(CF_sim1)#zero-inflation
+
+#Add zero-inflation parameter
+CF_m2 <- glmmTMB(value ~ Strain * Treatment * Day + (1|ID), ziformula = ~ Day, family = 'nbinom1', data = thermo_c_long)
+
+#SImulate residuals again to test model
+CF_sim2 <- simulateResiduals(CF_m2, plot = T)
+testDispersion(CF_sim2)
+testZeroInflation(CF_sim2)
+summary(CF_m2)
+
+#Get chi-squared using type III Anova to account for interaction
+Anova(CF_m2, type = 'III')
+
+
+# Lifetime reproduction success
+
+#Create dataframe containing Sum of total reproduction for each individual
+totalrep_CF<-na.omit(as.data.frame.table(tapply(thermo_c_long$value,list(thermo_c_long$Strain, thermo_c_long$Treatment, thermo_c_long$Str_tr, thermo_c_long$ID),sum)))
+
+#rename columns
+names(totalrep_CF)<-c('Strain', 'Treatment', "Str_tr", "Replicate", "Totrep")
+
+#Set factor levels for 
+totalrep_CF$Str_tr <- factor(totalrep_CF$Str_tr, levels = c("N2 ev", "N2 daf-2", "SKN-1 ev", "SKN-1 daf-2"))
+
+#Check distribution
+hist(totalrep_CF$Totrep)#close to normal
+
+#Analyse LRS with linear model
+LRS_CF <- lm(Totrep ~ Strain * Treatment, data = totalrep_CF)
+
+#Simulate residuals
+LRS_CF_sim1 <- simulateResiduals(LRS_CF, plot = T)#looks good
+
+summary(LRS_CF)#no effect, try removing interaction
+
+LRS_CF2 <- lm(Totrep ~ Strain + Treatment, data = totalrep_CF)
+
+#Simulate residuals
+LRS_CF_sim2 <- simulateResiduals(LRS_CF2, plot = T)#OK
+
+summary(LRS_CF2)#trend toward higher LRS in SKN-1
+
+#Use type II anova to get chi-squared
+Anova(LRS_CF2, type = 'II')
+
+#Dataframe into long form to start fresh
+thermo_c_long <- thermo_CF_rep %>% 
+  pivot_longer(
+    cols = c(`D1`,`D2`, `D3`, `D4`, `D5`,`D6`, `D7`,`D8`,`D9`), 
+    names_to = "Day",
+    values_to = "value")
+
+#create a level order for 10 days
+level_order <- c('D1', 'D2', 'D3', 'D4', 'D5','D6','D7','D8','D9')
+
+#reorder levels so 10 is last
+thermo_c_long$Day <- factor(thermo_c_long$Day, levels = level_order)
+
+
+#spread data back out
+thermo_c_wide <- spread(thermo_c_long, Day, value)
+str(thermo_c_wide)
+
+thermo_c_wide <- thermo_c_wide %>%
+  dplyr::select(-c(Matricide))
+
+thermo_c_wide <- na.omit(thermo_c_wide)
+
+#calculate Lambda for each individual
+L <- matrix(nrow = nrow(thermo_c_wide), ncol = 4)
+
+for (i in 1:nrow(thermo_c_wide)){
+  Les <- matrix(0, ncol = 11, nrow = 11)
+  diag(Les[-1,]) <- rep(1, 10) # add the 1s for survival probability diagonally
+  Fert <- c(0,0, as.numeric(as.vector(thermo_c_wide[i,][4:12]))) #the columns in data that has the reproductive counts
+  Fert[is.na(Fert)] <- 0 #makes all NAs into 0s
+  Les[1,] <- c(Fert)
+  class(Les) <- "leslie.matrix"
+  Lambda <- popbio::eigen.analysis(Les)$lambda1
+  L[i, 1:4] <- c(paste0(thermo_c_wide$ID[i]), paste0(thermo_c_wide$Strain[i]), paste0(thermo_c_wide$Treatment[i]), Lambda)
+  
+}
+
+#rename columns
+colnames(L)<-c("ID", "Strain", "Treatment", "Lambda")
+
+#make L a data frame
+thermo_c_lam<-as.data.frame(L)
+
+#make sure it's numeric
+thermo_c_lam$Lambda<-as.numeric(as.character(thermo_c_lam$Lambda))
+thermo_c_lam$Treatment <- as.factor(thermo_c_lam$Treatment)
+
+
+#lambda analysis
+hist(thermo_c_lam$Lambda)#there's an outlier
+thermo_c_lam_m1 <- lm(Lambda ~ Strain * Treatment, data = thermo_c_lam)
+summary(thermo_c_lam_m1)
+sim_lam_m1 <- simulateResiduals(thermo_c_lam_m1, plot = T)#ok, outlier creates only minor issues
+
+#try removing interaction
+thermo_c_lam_m2 <- lm(Lambda ~ Strain + Treatment, data = thermo_c_lam)
+summary(thermo_c_lam_m2)
+sim_lam_m1 <- simulateResiduals(thermo_c_lam_m1, plot = T)
+Anova(thermo_c_lam_m2, type = 'II')
+
+```
+
+## Lifespan
+```{r}
+
+#Create a combined variable for strain and treatment since forest plot can't do interactions
+thermo_CF_LS <- thermo_CF_LS %>%
+  unite(Str_tr, c('Strain', 'Treatment.ID'), remove = F)
+
+
+
+#Set levels
+thermo_CF_LS$Tr_str <- factor(thermo_CF_LS$Str_tr, levels = c("N2_ev", "N2_daf", "SKN-1_ev", "SKN-1_daf"))
+
+#Set as factor
+thermo_CF_LS$Str_tr <- as.factor(thermo_CF_LS$Str_tr)
+
+#Set N2_ev as baseline level
+thermo_CF_LS$Str_tr <- relevel(thermo_CF_LS$Str_tr, ref = 'N2_ev')
+
+#Exclude unnatural causes of mortality, L = loss, W = wall, E = explosion
+thermo_CF_LS <- thermo_CF_LS %>%
+  filter(thermo_CF_LS$Cause != 'L' & thermo_CF_LS$Cause !='W' & thermo_CF_LS$Cause != 'E')
+
+#Create dataframe excluding matricides
+thermo_CF_LSNM <- thermo_CF_LS %>%
+  filter(thermo_CF_LS$Cause != 'M')
+
+#Sometimes NAs are produced creating an additional non-existent factor level - omit NAs first
+thermo_CF_LS <- na.omit(thermo_CF_LS)
+thermo_CF_LSNM <- na.omit(thermo_CF_LSNM)
+
+#Drop non-existent factor level - or cox models get confused
+thermo_CF_LS$Str_tr <- droplevels(thermo_CF_LS$Str_tr)
+levels(thermo_CF_LS$Str_tr)
+thermo_CF_LSNM$Str_tr <- droplevels(thermo_CF_LSNM$Str_tr)
+
+#Mixed effects cox proportional hazards model to test effect of treatment on survival probability
+CF_cox <- coxme(Surv(Age, Event) ~ Strain * Treatment.ID + (1|Plate.ID), data = thermo_CF_LS)
+summary(CF_cox)
+Anova(CF_cox, type = 'III')
+
+#Test model 
+cox.zph(CF_cox)#Strain * Treatment is fine
+plot(cox.zph(CF_cox))
+
+#Mixed effects cox proportional hazards model to test effect of treatment on survival prob
+CF_NM_cox <- coxme(Surv(Age, Event) ~ Strain * Treatment.ID + (1|Plate.ID), data = thermo_CF_LSNM)
+summary(CF_NM_cox)
+Anova(CF_NM_cox, type = 'III')
+
+#test model
+plot(cox.zph(CF_NM_cox))
+cox.zph(CF_NM_cox)#close p-values - combined with plot acceptable 
+
+
+```
+
+
+# 25C first thermocycling
+Reproduction and lifespan assays following 24 hour thermo-cycling between 15 and 25C with 25C as starting temperature across four treatments: SKN-1 mutant + daf-2 RNAi, SKN-1 mutant + ev (control), N2 + daf-2 RNAi, N2 + ev
+
+## Reproduction
+```{r}
+
+#Put dataframe into long form
+thermo_h_long <- thermo_HF_rep %>% 
+  pivot_longer(
+    cols = c(`D1`,`D2`, `D3`, `D4`, `D5`,`D6`, `D7`,`D8`,`D9`), 
+    names_to = "Day",
+    values_to = "value")
+
+#Keep only columns that are necessary
+thermo_h_long <- thermo_h_long %>%
+  dplyr::select(c('ID','Strain', 'Treatment','Day','value'))
+
+#Get rid of NAs
+thermo_h_long <- na.omit(thermo_h_long)
+
+#Create a combined strain and treatment column for plotting
+thermo_h_long <- thermo_h_long %>%
+  unite(Str_tr, c('Strain', 'Treatment'), remove = F)
+
+#Set factor levels for Strain x Treatment
+thermo_h_long$Str_tr <- factor(thermo_h_long$Str_tr, levels = c("N2_ev", "N2_daf", "SKN-1_ev", "SKN-1_daf"))
+
+#change names of Str_tr
+levels(thermo_h_long$Str_tr) <- list('N2 ev' = 'N2_ev', 'N2 daf-2' = 'N2_daf', 'SKN-1 ev' = 'SKN-1_ev', 'SKN-1 daf-2' = 'SKN-1_daf')
+#Make sure Day is a factor
+thermo_h_long$Day <- as.factor(thermo_h_long$Day)
+
+#Change day to a numeric variable for analysis
+levels(thermo_h_long$Day) <- list('1' = 'D1', '2' = 'D2', '3' = 'D3', '4' = 'D4', '5' = 'D5', '6' = 'D6', '7' = 'D7', '8' = 'D8', '9' = 'D9')
+thermo_h_long$Day <- as.numeric(thermo_h_long$Day)
+
+#Analyse age-specific reproduction - glmmTMB with negative binomial family (will try nbinom2 to account for curvature at early days)
+
+HF_m1 <- glmmTMB(value ~ Strain * Treatment * Day + (1|ID), family = nbinom2(), data = thermo_h_long)
+
+#simulate residuals with DHARMa, test dispersion and zero inflation
+HF_sim1 <- simulateResiduals(HF_m1, plot = T)
+testDispersion(HF_sim1)# a bit underdispersed
+testZeroInflation(HF_sim1)#very zero-inflated
+
+#Try adding ZI paramter ~ Day (since 0's more likely to occur on certain days)
+HF_m2 <- glmmTMB(value ~ Strain * Treatment * Day + (1|ID), family = nbinom2(), ziformula = ~Day, data = thermo_h_long)
+
+#simualte residuals
+HF_sim2 <- simulateResiduals(HF_m2, plot = T)
+testDispersion(HF_sim2)#got a little worse
+testZeroInflation(HF_sim2)#still very zero-inflated
+
+#Try adding additional Treatment*Strain information into ZI parameter
+HF_m3 <- glmmTMB(value ~ Strain * Treatment * Day + (1|ID), family = nbinom2(), ziformula = ~ Day * Strain * Treatment, data = thermo_h_long)
+
+#simulate residuals
+HF_sim3 <- simulateResiduals(HF_m3, plot= T)
+testDispersion(HF_sim3)
+testZeroInflation(HF_sim3)
+summary(HF_m3)#not converging? all NA
+
+#Try removing interactions from ziformula
+HF_m4 <- glmmTMB(value ~ Strain * Treatment * Day + (1|ID), ziformula = ~ Day + Strain + Treatment, data = thermo_h_long, family = nbinom2())#won't converge
+
+#Add OLRE - keep Day as formula
+thermo_h_long <- tibble::rowid_to_column(thermo_h_long, "OLRE")
+HF_m5 <- glmmTMB(value ~ Strain * Treatment * Day + (1|ID) + (1|OLRE), ziformula = ~ Day, family = nbinom2(), data = thermo_h_long)
+summary(HF_m5)
+HF_sim5 <- simulateResiduals(HF_m5, plot = T)
+testDispersion(HF_sim5)
+testZeroInflation(HF_sim5)
+
+#Try including just strain in ziformula (because SKN-1s overall reproduced for longer)
+HF_m6 <- glmmTMB(value ~ Strain * Treatment * Day + (1|ID) + (1|OLRE), ziformula = ~ Day + Strain, family = nbinom2(), data = thermo_h_long)
+summary(HF_m6)#won't converge - previous model showed no signfiicant 3-way interaction - try removing
+
+#Model without 3 way interaction
+HF_m7 <- glmmTMB(value ~ Strain*Treatment + Strain * Day + Treatment *Day + (1|ID) + (1|OLRE), ziformula = ~Day + Strain, family = nbinom2(), data = thermo_h_long)
+summary(HF_m7)#this converged
+HF_sim7 <- simulateResiduals(HF_m7, plot = T)
+testDispersion(HF_sim7)#better
+testZeroInflation(HF_sim7)#better but still zero inflated
+
+#Try adding 1 + Day as ziformula
+HF_m8 <- glmmTMB(value ~ Strain*Treatment + Strain * Day + Treatment *Day + (1|ID) + (1|OLRE), ziformula = ~1+Day + Strain, family = nbinom2(), data = thermo_h_long)
+summary(HF_m8)
+
+HF_sim8 <- simulateResiduals(HF_m8, plot = T)
+testDispersion(HF_sim8)#better
+testZeroInflation(HF_sim8)#slightly better
+
+#Try adding strain as interaction with day to ziformula
+HF_m9 <- glmmTMB(value ~ Strain*Treatment + Strain * Day + Treatment *Day + (1|ID) + (1|OLRE), ziformula = ~1+Day * Strain, family = nbinom2(), data = thermo_h_long)
+summary(HF_m9)#won't converge
+
+#try adding strain additively to day in ziformula
+HF_m10 <- glmmTMB(value ~ Strain*Treatment + Strain * Day + Treatment *Day + (1|ID) + (1|OLRE), ziformula = ~1+Day + Strain, family = nbinom1(), data = thermo_h_long)
+summary(HF_m10)#doesn't converge
+
+
+#Try using splines in ziformula
+library(splines)
+HF_m11 <- glmmTMB(value ~ Strain*Treatment + Strain*Day + Treatment*Day + (1|ID), ziformula =~ ns(Day, df = 3), family = nbinom2(), data = thermo_h_long)
+summary(HF_m11)
+HF_sim11 <- simulateResiduals(HF_m11, plot = T)
+testDispersion(HF_sim11)
+testZeroInflation(HF_sim11)
+Anova(HF_m11, type = 'III')
+
+#try df = 2 splines
+HF_m11_2 <- glmmTMB(value ~ Strain*Treatment + Strain*Day + Treatment*Day + (1|ID), ziformula =~ ns(Day, df = 2), family = nbinom2(), data = thermo_h_long)
+
+#try df = 4 splines
+HF_m11_4 <- glmmTMB(value ~ Strain*Treatment + Strain*Day + Treatment*Day + (1|ID), ziformula =~ ns(Day, df = 4), family = nbinom2(), data = thermo_h_long)
+
+#df = 3 is best - but makes little difference whether it's 2, 3, 4
+AIC(HF_m11, HF_m11_2, HF_m11_4)
+
+
+#Calculate total reproduction over experiment per individual
+totalrep_HF<-na.omit(as.data.frame.table(tapply(thermo_h_long$value,list(thermo_h_long$Strain, thermo_h_long$Treatment, thermo_h_long$Str_tr, thermo_h_long$ID),sum)))
+
+#rename columns
+names(totalrep_HF)<-c('Strain','Treatment',"Str_tr", "Replicate", "Totrep")
+
+#change factor levels
+totalrep_HF$Str_tr <- factor(totalrep_HF$Str_tr, levels = c("N2 ev", "N2 daf-2", "SKN-1 ev", "SKN-1 daf-2"))
+
+
+
+totalrep_HF$Treatment <- relevel(totalrep_HF$Treatment, ref = 'ev')
+
+#Check distribution of LRS 
+hist(totalrep_HF$Totrep)#normal
+
+#Linear model to analyse total repro
+LRS_HF_m1 <- lm(Totrep ~ Treatment*Strain, data = totalrep_HF)
+summary(LRS_HF_m1)
+
+#simulate residual with DHARMa package
+LRS_HF_sim1 <- simulateResiduals(LRS_HF_m1, plot = T)#OK!
+
+#Try removing interaction
+LRS_HF_m2 <- lm(Totrep ~ Treatment + Strain, data = totalrep_HF)
+summary(LRS_HF_m2)#SKN-1 have (significantly) lower LRS now in hot first
+Anova(LRS_HF_m2, type = 'II')
+#simulate residuals
+LRS_HF_sim2 <- simulateResiduals(LRS_HF_m2, plot = T)#OK!
+
+
+#Dataframe into long form to start fresh
+thermo_h_long <- thermo_HF_rep %>% 
+  pivot_longer(
+    cols = c(`D1`,`D2`, `D3`, `D4`, `D5`,`D6`, `D7`,`D8`,`D9`), 
+    names_to = "Day",
+    values_to = "value")
+
+#create a level order for 10 days
+level_order <- c('D1', 'D2', 'D3', 'D4', 'D5','D6','D7','D8','D9')
+
+#reorder levels so 10 is last
+thermo_h_long$Day <- factor(thermo_h_long$Day, levels = level_order)
+
+
+#spread data back out
+thermo_h_wide <- spread(thermo_h_long, Day, value)
+str(thermo_h_wide)
+
+thermo_h_wide <- thermo_h_wide %>%
+  dplyr::select(-c(Matricide))
+
+thermo_h_wide <- na.omit(thermo_h_wide)
+
+#calculate Lambda for each individual
+L <- matrix(nrow = nrow(thermo_h_wide), ncol = 4)
+
+for (i in 1:nrow(thermo_h_wide)){
+  Les <- matrix(0, ncol = 11, nrow = 11)
+  diag(Les[-1,]) <- rep(1, 10) # add the 1s for survival probability diagonally
+  Fert <- c(0,0, as.numeric(as.vector(thermo_h_wide[i,][4:12]))) #the columns in data that has the reproductive counts
+  Fert[is.na(Fert)] <- 0 #makes all NAs into 0s
+  Les[1,] <- c(Fert)
+  class(Les) <- "leslie.matrix"
+  Lambda <- popbio::eigen.analysis(Les)$lambda1
+  L[i, 1:4] <- c(paste0(thermo_h_wide$ID[i]), paste0(thermo_h_wide$Strain[i]), paste0(thermo_h_wide$Treatment[i]), Lambda)
+  
+}
+
+#rename columns
+colnames(L)<-c("ID", "Strain", "Treatment", "Lambda")
+
+#make L a data frame
+thermo_h_lam<-as.data.frame(L)
+
+#make sure it's numeric
+thermo_h_lam$Lambda<-as.numeric(as.character(thermo_h_lam$Lambda))
+thermo_h_lam$Treatment <- as.factor(thermo_h_lam$Treatment)
+
+
+#lambda analysis
+hist(thermo_h_lam$Lambda)#a bit skewed, but OK
+thermo_h_lam_m1 <- lm(Lambda ~ Strain * Treatment, data = thermo_h_lam)
+summary(thermo_h_lam_m1)
+sim_lam_m1 <- simulateResiduals(thermo_c_lam_m2, plot = T)#ok
+Anova(thermo_h_lam_m1, type = 'II')
+
+
+```
+
+## Lifespan
+```{r}
+#Combine Strain and Treatment into one variable for plotting
+thermo_HF_LS <- thermo_HF_LS %>%
+  unite(Str_tr, c('Strain', 'Treatment.ID'), remove = F)
+
+#Make sure it's a factor
+thermo_HF_LS$Str_tr <- as.factor(thermo_HF_LS$Str_tr)
+
+#Set N2 Ev as reference level
+thermo_HF_LS$Str_tr <- relevel(thermo_HF_LS$Str_tr, ref = 'N2_ev')
+
+#FIlter out unnatural deaths (Loss, walling, explosions)
+thermo_HF_LS <- thermo_HF_LS %>%
+  filter(thermo_HF_LS$Cause != 'L' & thermo_HF_LS$Cause !='W' & thermo_HF_LS$Cause != 'E')
+
+#name factor levels of Str_tr
+thermo_HF_LS$Str_tr <- factor(thermo_HF_LS$Str_tr, levels = c("N2_ev", "N2_daf", "SKN-1_ev", "SKN-1_daf"))
+
+#Check what Age is classed as
+class(thermo_HF_LS$Age)
+
+#Change to numeric
+thermo_HF_LS$Age <- as.numeric(thermo_HF_LS$Age)
+
+#Create survival object
+survHF<-survfit(Surv(Age,Event)~Str_tr,data=thermo_HF_LS)
+
+#Create a binary variable for matricides (1 = matricide, 0 = no matricide) to analyse with logistic regression
+thermo_HF_LS$Matricide <- as.numeric(thermo_HF_LS$Cause == 'M')
+
+#binomial glmer for matricide occurrence (logistic regression)
+mat_mod <- glmer(Matricide ~ Str_tr + (1|Plate.ID), data = thermo_HF_LS, family = 'binomial')
+summary(mat_mod)
+
+#Exclude matricides
+thermo_HF_LSNM <- thermo_HF_LS %>%
+  filter(thermo_HF_LS$Cause != 'M')
+
+#Sometimes NAs are produced creating an additional non-existent factor level - omit NAs first
+thermo_HF_LS <- na.omit(thermo_HF_LS)
+thermo_HF_LSNM <- na.omit(thermo_HF_LSNM)
+
+#Drop non-existent factor level - or cox models get confused
+thermo_HF_LS$Str_tr <- droplevels(thermo_HF_LS$Str_tr)
+levels(thermo_HF_LS$Str_tr)
+thermo_HF_LSNM$Str_tr <- droplevels(thermo_HF_LSNM$Str_tr)
+
+#Mixed effects cox proportional hazards model to test effect of treatment on survival probability
+HF_cox <- coxme(Surv(Age, Event) ~ Strain * Treatment.ID + (1|Plate.ID), data = thermo_HF_LS)
+summary(HF_cox)
+Anova(HF_cox, type = 'III')
+
+#Test model 
+cox.zph(HF_cox)#check with EH analysis
+
+#Mixed effects cox proportional hazards model to test effect of treatment on survival prob
+HF_NM_cox <- coxme(Surv(Age, Event) ~ Strain * Treatment.ID + (1|Plate.ID), data = thermo_HF_LSNM)
+summary(HF_NM_cox)
+Anova(HF_NM_cox, type = 'III')
+#test model
+plot(cox.zph(HF_NM_cox))
+cox.zph(HF_NM_cox)#compare to an EH analysis
+
+#Check with EH analysis
+
+#Matricides included
+#Change the format of the Date columns to ensure that R recognises them as actual dates
+thermo_HF_LS_EH <- thermo_HF_LS %>%
+  mutate(
+    D1 = as.Date(paste0(D1, "-2025"), format = "%d-%b-%Y"),
+    Death.Date = as.Date(paste0(Death.Date, "-2025"), format = "%d-%b-%Y")
+  )
+
+#Create an individual ID number for every worm
+thermo_HF_LS_EH <- thermo_HF_LS_EH %>%
+  mutate(ID = row_number())
+
+#Create a new column status which contains '0' for any day the worm is alive and '1' for the date that it dies
+EH_thermo_HF_LS <- thermo_HF_LS_EH %>%
+  filter(!is.na(D1), !is.na(Death.Date)) %>%
+  rowwise() %>%
+  mutate(Date = list(seq(D1, Death.Date, by = "1 day"))) %>%
+  unnest(Date) %>%
+  ungroup() %>%
+  group_by(ID) %>%
+  mutate(
+    Day = row_number(),    # day counter per individual
+    status = if_else(Date == Death.Date, 1, 0)
+  ) %>%
+  ungroup() %>%
+  dplyr::select(c(ID, Strain, Treatment.ID, Plate.ID, Worm, Cause, Date, Day, status, Age, Event))
+
+#remove causes of death we want censored
+EH_thermo_HF_LS <- EH_thermo_HF_LS %>%
+  filter(Cause != 'W' & Cause != 'E' & Cause != 'L')
+
+#make sure this all worked!
+head(EH_thermo_HF_LS)
+
+#run binomial glmer - include ID for repeated measures as random factor and Day to account for time on survival
+EH_m1 <- glmmTMB(status ~ Strain * Treatment.ID + (1 | ID) + (1 | Day), family = "binomial",
+    data = EH_thermo_HF_LS)
+
+summary(EH_m1)#these results are the same as cox model - will use the cox model for consistency
+
+
+
+#Matricides censored
+#Change the format of the Date columns to ensure that R recognises them as actual dates
+thermo_HF_LS_EHNM <- thermo_HF_LSNM %>%
+  mutate(
+    D1 = as.Date(paste0(D1, "-2025"), format = "%d-%b-%Y"),
+    Death.Date = as.Date(paste0(Death.Date, "-2025"), format = "%d-%b-%Y")
+  )
+
+#Create an individual ID number for every worm
+thermo_HF_LS_EHNM <- thermo_HF_LS_EHNM %>%
+  mutate(ID = row_number())
+
+#Create a new column status which contains '0' for any day the worm is alive and '1' for the date that it dies
+EH_thermo_HF_LSNM <- thermo_HF_LS_EHNM %>%
+  filter(!is.na(D1), !is.na(Death.Date)) %>%
+  rowwise() %>%
+  mutate(Date = list(seq(D1, Death.Date, by = "1 day"))) %>%
+  unnest(Date) %>%
+  ungroup() %>%
+  group_by(ID) %>%
+  mutate(
+    Day = row_number(),    # day counter per individual
+    status = if_else(Date == Death.Date, 1, 0)
+  ) %>%
+  ungroup() %>%
+  dplyr::select(c(ID, Strain, Treatment.ID, Plate.ID, Worm, Cause, Date, Day, status, Age, Event))
+
+#remove causes of death we want censored
+EH_thermo_HF_LSNM <- EH_thermo_HF_LSNM %>%
+  filter(Cause != 'W' & Cause != 'E' & Cause != 'L')
+
+#make sure this all worked!
+head(EH_thermo_HF_LSNM)
+
+#run binomial glmer - include ID for repeated measures as random factor and Day to account for time on survival
+EH_m1_NM <- glmmTMB(status ~ Strain * Treatment.ID + (1 | ID) + (1 | Day), family = "binomial",
+    data = EH_thermo_HF_LSNM)
+
+summary(EH_m1_NM)#these results are the same as cox model - will use the cox model for consistency
+
+```
+
+
+# SKN-1 in 15C
+Lifespan assays in SKN-1 mutants and N2s with daf-2 or ev (control) RNAi treatments in 15C, including a treatment with a single 24-hour cycle of 25C at ~ L2 stage
+##Lifespan
+```{r}
+
+#Include only 15C data
+SKN_15 <- SKN_15_25_LS %>%
+  filter(Temperature != '25' & Temperature != '25F')
+
+#Unite strain and treatment for plotting
+SKN_15 <- SKN_15 %>%
+  unite(Str_tr, 'Strain','Treatment.ID', remove = F)
+
+#Unite strain, treatment and temperature for plotting
+SKN_15 <- SKN_15 %>%
+  unite(Str_tr_temp, 'Str_tr', 'Temperature', remove = F)
+
+#Make sure it's a factor
+SKN_15$Str_tr_temp <- as.factor(SKN_15$Str_tr_temp)
+
+#Set reference level to N2 Ev
+SKN_15$Str_tr_temp <- relevel(SKN_15$Str_tr_temp, ref = 'N2_ev_15')
+
+#Name levels
+SKN_15$Str_tr_temp <- factor(SKN_15$Str_tr_temp, levels = c('N2_ev_15','N2_daf_15','SKN_ev_15','SKN_daf_15','SKN_daf_15F'))
+
+#Exclude matricides
+SKN_15_NM <- SKN_15 %>%
+  filter(Cause != 'M')
+
+#Analyse two strains individually due to additionally treatment of thermocycling during development in SKN-1 only
+#FIlter only SKNs 
+SKN_only_15 <- SKN_15 %>%
+  filter(Strain == 'SKN')
+
+str(SKN_only_15)
+
+#Check levels of Strain
+SKN_only_15$Strain <- as.factor(SKN_only_15$Strain)
+levels(SKN_only_15$Strain)
+
+#Check levels of temperature
+levels(SKN_only_15$Temperature)
+
+#Need to drop levels - still thinks it has 15C treatments 
+SKN_only_15$Temperature <- droplevels(SKN_only_15$Temperature)
+levels(SKN_only_15$Temperature)
+
+#Check levels of Treatment
+SKN_only_15$Treatment.ID <- as.factor(SKN_only_15$Treatment.ID)
+levels(SKN_only_15$Treatment.ID)
+SKN_only_15$Treatment.ID <- droplevels(SKN_only_15$Treatment.ID)
+
+#Combine Treatment and temperature because of imbalance
+SKN_only_15 <- SKN_only_15 %>%
+  unite(Tr_temp, 'Treatment.ID','Temperature', remove = F)
+
+#set ev as reference level
+SKN_only_15$Tr_temp <- as.factor(SKN_only_15$Tr_temp)
+SKN_only_15$Tr_temp <- relevel(SKN_only_15$Tr_temp, ref = 'ev_15')
+
+#Coxme model with combined effect of treatment and temperature to account for developmental thermocycle treatment
+cox_SKN_15_only <- coxme(Surv(Age, Event) ~ Tr_temp + (1|Plate.ID), data = SKN_only_15)
+summary(cox_SKN_15_only)
+Anova(cox_SKN_15_only, type = 'II')
+
+#test model
+cox.zph(cox_SKN_15_only)# OK! p = 0.18
+
+#Matricides censored
+SKN_only_15_NM <- SKN_only_15 %>%
+  filter(Cause !='M')
+
+#Coxme model with combined effect of treatment and temperature to account for developmental thermocycle treatment with matricides censored
+cox_SKN_15_only_NM <- coxme(Surv(Age, Event) ~ Tr_temp + (1|Plate.ID), data = SKN_only_15_NM)
+summary(cox_SKN_15_only_NM)
+Anova(cox_SKN_15_only_NM, type = 'II')
+#test model
+cox.zph(cox_SKN_15_only_NM)# global p = 0.41, OK!
+
+
+#Filter out N2s
+N2_only_15 <- SKN_15 %>%
+  filter(Strain == 'N2')
+
+#Set ev as reference level
+N2_only_15$Treatment.ID <- as.factor(N2_only_15$Treatment.ID)
+N2_only_15$Treatment.ID <- relevel(N2_only_15$Treatment.ID, ref = 'ev')
+
+#Coxme model with treatment as factor
+cox_N2_15_only <- coxme(Surv(Age, Event) ~ Treatment.ID + (1|Plate.ID), data = N2_only_15)
+summary(cox_N2_15_only)
+Anova(cox_N2_15_only, type = 'II')
+
+#test model
+cox.zph(cox_N2_15_only)#OK p = 0.79
+
+#Censor matricides
+N2_only_15_NM <- N2_only_15 %>%
+  filter(Cause !='M')
+
+#coxme model with treatment as factor with matricides censored
+cox_N2_15_only_NM <- coxme(Surv(Age, Event) ~ Treatment.ID + (1|Plate.ID), data = N2_only_15_NM)
+summary(cox_N2_15_only_NM)
+Anova(cox_N2_15_only_NM, type = 'II')
+#test model
+cox.zph(cox_N2_15_only_NM)#p = 0.87 OK
+
+
+```
+
+# SKN-1 in 25C
+Lifespan assays in SKN-1 mutants and N2s with daf-2 or ev (control) RNAi treatments in 25C, including a treatment with a single 24-hour cycle of 15C at ~ L2 stage
+## Lifespan
+```{r}
+
+#Temperature as a factor
+SKN_15_25_LS$Temperature <- as.factor(SKN_15_25_LS$Temperature)
+
+#Get only 25C data
+SKN_25 <- SKN_15_25_LS %>%
+  filter(Temperature != '15' & Temperature != '15F')
+
+#Combine Strain and treatment for plotting
+SKN_25 <- SKN_25 %>%
+  unite(Str_tr, 'Strain','Treatment.ID', remove = F)
+
+#Also combine temperature with strain and treatment
+SKN_25 <- SKN_25 %>%
+  unite(Str_tr_temp, 'Str_tr', 'Temperature', remove = F)
+
+#Rename factor levels
+SKN_25$Str_tr_temp <- factor(SKN_25$Str_tr_temp, levels = c('N2_ev_25','N2_daf_25','SKN_ev_25','SKN_daf_25','SKN_daf_25F'))
+
+#Ensure it's a factor
+SKN_25$Str_tr_temp <- as.factor(SKN_25$Str_tr_temp)
+
+#Set ev N2 with 25C only as reference level
+SKN_25$Str_tr_temp <- relevel(SKN_25$Str_tr_temp, ref = 'N2_ev_25')
+
+
+#Exclude matricides
+SKN_25_NM <- SKN_25 %>%
+  filter(Cause != 'M')
+
+#Make sure Str-tr_temp is a factor
+SKN_25_NM$Str_tr_temp <- as.factor(SKN_25_NM$Str_tr_temp)
+
+#Reset baseline to ev N2 in 25 only
+SKN_25_NM$Str_tr_temp <- relevel(SKN_25_NM$Str_tr_temp, ref = 'N2_ev_25')
+
+
+#Analyse within strains becaues of additional treatment only in SKN-1
+
+#FIlter only SKNs 
+SKN_only_25 <- SKN_25 %>%
+  filter(Strain == 'SKN')
+
+str(SKN_only_25)
+
+#Check levels of Strain
+SKN_only_25$Strain <- as.factor(SKN_only_25$Strain)
+levels(SKN_only_25$Strain)
+
+#Check levels of temperature
+levels(SKN_only_25$Temperature)
+
+#Need to drop levels - still thinks it has 15C treatments 
+SKN_only_25$Temperature <- droplevels(SKN_only_25$Temperature)
+levels(SKN_only_25$Temperature)
+
+#Check levels of Treatment
+SKN_only_25$Treatment.ID <- as.factor(SKN_only_25$Treatment.ID)
+levels(SKN_only_25$Treatment.ID)
+SKN_only_25$Treatment.ID <- droplevels(SKN_only_25$Treatment.ID)
+
+#Combine Treatment and temperature because of imbalance
+SKN_only_25 <- SKN_only_25 %>%
+  unite(Tr_temp, 'Treatment.ID','Temperature', remove = F)
+
+#set ev as reference level
+SKN_only_25$Tr_temp <- as.factor(SKN_only_25$Tr_temp)
+SKN_only_25$Tr_temp <- relevel(SKN_only_25$Tr_temp, ref = 'ev_25')
+
+#Coxme model with combined effect of treatment and temperature to account for developmental thermocycle treatment
+cox_SKN_25_only <- coxme(Surv(Age, Event) ~ Tr_temp + (1|Plate.ID), data = SKN_only_25)
+summary(cox_SKN_25_only)
+Anova(cox_SKN_25_only, type = 'II')
+#test model
+cox.zph(cox_SKN_25_only)# global p = 0.004 - check with EH analysis
+
+#Matricides censored
+SKN_only_25_NM <- SKN_only_25 %>%
+  filter(Cause !='M')
+
+#Coxme model with combined effect of treatment and temperature to account for developmental thermocycle treatment with matricides censored
+cox_SKN_25_only_NM <- coxme(Surv(Age, Event) ~ Tr_temp + (1|Plate.ID), data = SKN_only_25_NM)
+summary(cox_SKN_25_only_NM)
+Anova(cox_SKN_25_only_NM, type = 'II')
+
+#test model
+cox.zph(cox_SKN_25_only_NM)# global p = 0.054 OK
+
+
+#Filter out N2s
+N2_only_25 <- SKN_25 %>%
+  filter(Strain == 'N2')
+
+#Set ev as reference level
+N2_only_25$Treatment.ID <- as.factor(N2_only_25$Treatment.ID)
+N2_only_25$Treatment.ID <- relevel(N2_only_25$Treatment.ID, ref = 'ev')
+
+#Coxme model with treatment as factor
+cox_N2_only <- coxme(Surv(Age, Event) ~ Treatment.ID + (1|Plate.ID), data = N2_only_25)
+summary(cox_N2_only)
+Anova(cox_N2_only, type = 'II')
+
+#test model
+cox.zph(cox_N2_only)#OK p>0.05
+
+#Censor matricides
+N2_only_25_NM <- N2_only_25 %>%
+  filter(Cause !='M')
+
+#coxme model with treatment as factor with matricides censored
+cox_N2_only_NM <- coxme(Surv(Age, Event) ~ Treatment.ID + (1|Plate.ID), data = N2_only_25_NM)
+summary(cox_N2_only_NM)
+Anova(cox_N2_only_NM, type = 'II')
+
+#test model
+cox.zph(cox_N2_only_NM)#p > 0.05 OK
+
+#Check with EH analysis
+
+#Matricides included
+#Change the format of the Date columns to actual dates and add ID
+SKN_only_25_EH<- SKN_only_25 %>%
+  mutate(
+    D1 = as.Date(paste0(D1, "-2025"), format = "%d-%b-%Y"),
+    Death.Date = as.Date(paste0(Death.Date, "-2025"), format = "%d-%b-%Y"))%>%
+  mutate(ID = row_number())
+
+
+
+#Create a new column status which contains '0' for any day the worm is alive and '1' for the date that it dies
+EH_SKN_only_25 <- SKN_only_25_EH %>%
+  filter(!is.na(D1), !is.na(Death.Date)) %>%
+  rowwise() %>%
+  mutate(Date = list(seq(D1, Death.Date, by = "1 day"))) %>%
+  unnest(Date) %>%
+  ungroup() %>%
+  group_by(ID) %>%
+  mutate(
+    Day = row_number(),    # day counter per individual
+    status = if_else(Date == Death.Date, 1, 0)
+  ) %>%
+  ungroup() %>%
+  dplyr::select(c(ID, Strain, Tr_temp,Treatment.ID, Plate.ID, Worm, Cause, Date, Day, status, Age, Event))
+
+#remove causes of death we want censored
+EH_SKN_only_25 <- EH_SKN_only_25 %>%
+  filter(Cause != 'W' & Cause != 'E' & Cause != 'L')
+
+#make sure this all worked!
+head(EH_SKN_only_25)
+
+#run binomial glmer - include ID for repeated measures as random factor and Day to account for time on survival
+SKN_25_EH_m1 <- glmmTMB(status ~ Tr_temp + (1 | ID) + (1 | Day), family = "binomial",
+    data = EH_SKN_only_25)
+
+summary(SKN_25_EH_m1)#these results are the same as cox model - will use the cox model for consistency
+summary(cox_SKN_25_only)
+
+
+```
